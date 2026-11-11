@@ -1,0 +1,4 @@
+# Python 3.10-3.12 recomendado (TensorFlow aún no soporta todas las versiones nuevas)
+opencv-python>=4.9
+numpy
+tensorflow>=2.16

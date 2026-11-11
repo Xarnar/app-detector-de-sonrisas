@@ -1,0 +1,23 @@
+# Entorno virtual y caché de Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Datos personales y capturas generadas localmente
+mis_fotos/
+captura_*.png
+respaldo_*.mp4
+
+# Archivos comprimidos redundantes
+results.zip
+
+# Variables de entorno y archivos del sistema/IDE
+.env
+.env.*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
