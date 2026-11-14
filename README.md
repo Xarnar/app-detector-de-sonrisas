@@ -1,81 +1,121 @@
 # Detector de Sonrisas en Tiempo Real
 
-Proyecto universitario de Visión por Computadora para la detección y clasificación de sonrisas en tiempo real usando **YuNet** (detección facial) y una **CNN en Keras/TensorFlow** (clasificación `sonríe` / `no sonríe`).
+Proyecto universitario de Visión por Computadora para la detección facial y clasificación de sonrisas en tiempo real, integrando múltiples detectores de rostros y modelos convolucionales en TensorFlow/Keras.
+
+---
+
+## Características principales
+
+- **Interfaz Gráfica interactiva (`app_gui.py`)**: Construida con Tkinter (multi-hilo para no ralentizar el video). Permite alternar detectores y modelos en caliente, ajustar márgenes, umbrales y suavizado en vivo, ver los recortes 64×64 preprocesados y medir métricas de rendimiento (FPS de procesamiento e interfaz, tiempos de detección, clasificación y dibujo).
+- **Inferencia en tiempo real por OpenCV (`app_sonrisa.py`)**: Versión ligera y directa para ejecutar desde consola.
+- **Múltiples detectores faciales**:
+  - **YuNet** (`face_detection_yunet_2023mar.onnx`): Detector ligero moderno en una sola pasada (tiempo real a altos FPS).
+  - **SSD ResNet-10** (`modelo/`): Red neuronal profunda de detección facial en una pasada.
+  - **Práctica 6** (`practica_6_deteccion_rostros.py`): Análisis detallado usando pirámide de escalas + ventana deslizante + NMS, permitiendo comparar visualmente su tiempo frente a detectores en una pasada.
+- **Múltiples clasificadores de sonrisa**:
+  - **Modelo A (CNN desde cero)**: `model_A_cnn.keras` (ligero y rápido, ~25 ms/cara).
+  - **Modelo B (MobileNetV2 Transfer Learning)**: `model_B_mobilenetv2.keras`.
+- **Seguimiento y suavizado temporal**: Algoritmo de tracking por IoU para asociar rostros entre frames y suavizar las probabilidades por individuo.
+
+---
 
 ## Pipeline
 
 ```text
 Cámara / Video
-  └─> YuNet (face_detection_yunet_2023mar.onnx)
-        └─> Recorte cuadrado + escala de grises 64×64 (float32 0–255)
-              └─> CNN Keras (model_A_cnn.keras)
-                    └─> Seguimiento por IoU + suavizado temporal -> Overlay en pantalla
+  └─> Detector Facial (YuNet / SSD ResNet-10)
+        └─> Recorte cuadrado + preprocesado (escala de grises 64×64, float32 0–255)
+              └─> Clasificador CNN (Modelo A / Modelo B)
+                    └─> Seguimiento por IoU + Suavizado temporal
+                          └─> Visualización y métricas en pantalla
 ```
 
-- Si `face_detection_yunet_2023mar.onnx` no está presente, [`app_sonrisa.py`](app_sonrisa.py) lo descarga automáticamente desde OpenCV Zoo.
-- Si `model_A_cnn.keras` no está presente, la aplicación funciona en modo solo-detección de rostros.
+---
 
 ## Estructura del proyecto
 
-- `app_sonrisa.py`: Aplicación principal de inferencia en tiempo real con seguimiento por IoU y suavizado de predicciones.
-- `capture_dataset.py`: Herramienta para capturar recortes propios (`64×64` en escala de grises) con el mismo preprocesado que `app_sonrisa.py`, pensada para fine-tuning.
-- `model_A_cnn.keras`: Modelo CNN entrenado (entrada `(N, 64, 64, 1)` en `float32` rango `0–255`; el reescalado `1/255` está integrado en el modelo).
-- `A_metrics.json`: Métricas de evaluación del modelo y umbral recomendado (`0.34`).
-- `face_detection_yunet_2023mar.onnx`: Modelo YuNet para detección de rostros.
-- `results/`: Gráficas de entrenamiento/evaluación (`A_curvas.png`, `A_confusion.png`) y respaldo de métricas/modelo.
-- `requirements.txt`: Dependencias del proyecto.
+```text
+├── app_gui.py                      # Interfaz gráfica principal (Tkinter)
+├── smile_core.py                   # Núcleo modular: detectores, modelos, tracking y pipeline
+├── app_sonrisa.py                  # Versión de consola con OpenCV
+├── practica_6_deteccion_rostros.py # Módulo de ventana deslizante + pirámide
+├── model_A_cnn.keras               # Pesos del Modelo A (CNN desde cero)
+├── A_metrics.json                  # Métricas y umbral óptimo del Modelo A
+├── model_B_mobilenetv2.keras       # Pesos del Modelo B (MobileNetV2)
+├── B_metrics.json                  # Métricas y umbral óptimo del Modelo B
+├── face_detection_yunet_2023mar.onnx # Pesos del detector YuNet
+├── modelo/                         # Pesos y arquitectura del detector Caffe SSD
+│   ├── deploy.prototxt
+│   └── res10_300x300_ssd_iter_140000.caffemodel
+├── requirements.txt                # Dependencias del proyecto
+└── README.md                       # Documentación
+```
+
+---
 
 ## Requisitos e instalación
 
-Se recomienda **Python 3.10 – 3.12** (por compatibilidad con TensorFlow).
+Se recomienda **Python 3.10 – 3.12**.
 
 ```powershell
+# 1. Crear y activar entorno virtual
 python -m venv venv
 .\venv\Scripts\Activate.ps1
+
+# 2. Instalar dependencias
 pip install -r requirements.txt
 ```
 
+> **Nota sobre OpenCV**: `requirements.txt` especifica `opencv-python>=4.9,<5` para asegurar compatibilidad con el importador de modelos Caffe.
+
+---
+
 ## Uso
 
-### 1. Detector en tiempo real
+### 1. Interfaz Gráfica (Recomendada)
+
+```powershell
+# Usando cámara por defecto
+python app_gui.py
+
+# O usando un archivo de video
+python app_gui.py --source video.mp4
+```
+
+**Controles en la interfaz:**
+- **Selector de detector**: Cambia entre YuNet, SSD ResNet-10, Haar o Práctica 6 ROI.
+- **Selector de modelo**: Detecta automáticamente los archivos `.keras` en la carpeta y carga el umbral de su respectivo `*_metrics.json`.
+- **Deslizadores en vivo**:
+  - *Margen del recorte*: Ajusta cuánto contexto extra alrededor del rostro recibe el modelo (se recuerda de forma independiente por detector).
+  - *Umbral de sonrisa*: Probabilidad de corte para catalogar `Sonríe` vs `No sonríe`.
+  - *Suavizado*: Ventana de fotogramas para promediar la predicción en cada rostro.
+- **Botón "Analizar fotograma con la Práctica 6"**: Congela el fotograma y corre la pirámide multiescala con ventana deslizante, mostrando la comparativa de velocidad frente al detector en vivo.
+- **Atajos de teclado:** `q` / `Esc` (salir), `s` (captura de pantalla), `r` (iniciar/detener grabación de video), `d` (mostrar/ocultar tira de recortes 64×64).
+
+---
+
+### 2. Versión de consola en tiempo real (OpenCV)
 
 ```powershell
 python app_sonrisa.py
 ```
 
-Argumentos útiles:
-- `--source 0`: Índice de cámara (`0`, `1`, ...) o ruta a un video.
-- `--margin -0.10`: Fracción del recorte alrededor del rostro detectado por YuNet.
-- `--threshold`: Umbral de probabilidad para clasificar sonrisa (por defecto lee `umbral_recomendado` de `A_metrics.json`).
-- `--smooth 5`: Número de frames para promediar la probabilidad por persona (`1` desactiva el suavizado).
-- `--det-every 2`: Ejecuta YuNet cada `N` frames y reutiliza las cajas del tracker en los frames intermedios.
-- `--no-mirror`: Desactiva el efecto espejo en cámara web.
+**Parámetros útiles:**
+- `--source 0`: Índice de cámara o ruta a video.
+- `--model model_A_cnn.keras`: Modelo a utilizar.
+- `--margin -0.10`: Margen de recorte calibrado para YuNet.
+- `--smooth 5`: Número de frames para el suavizado de probabilidades.
+- `--det-every 2`: Frecuencia de inferencia de YuNet (los frames intermedios usan el tracker).
 
-Controles de teclado:
-- `q`: Salir
-- `+` / `-`: Ajustar el margen del recorte
-- `[` / `]`: Ajustar el umbral de clasificación
-- `d`: Mostrar/ocultar la vista debug de los recortes `64×64` que recibe el modelo
-- `r`: Iniciar/detener grabación de video (`respaldo_<timestamp>.mp4`)
-- `s`: Guardar captura de pantalla (`captura_<timestamp>.png`)
+---
 
-### 2. Captura de dataset propio
+## Comparativa de Modelos
 
-```powershell
-python capture_dataset.py
-```
-
-Controles de teclado:
-- `s`: Guardar recorte en `mis_fotos/sonrie/`
-- `n`: Guardar recorte en `mis_fotos/no_sonrie/`
-- `+` / `-`: Ajustar margen del recorte
-- `q`: Salir
-
-## Métricas del modelo (`A_metrics.json`)
-
-- **Modelo:** `A_cnn_desde_cero` (22 épocas)
-- **Umbral recomendado:** `0.34`
-- **Test Accuracy:** `93.22%`
-- **Test F1 (sonríe):** `0.8820`
-- **Test AUC:** `0.9731`
-- **Latencia:** `25.25 ms` por cara
+| Métrica | Modelo A (CNN desde cero) | Modelo B (MobileNetV2 TL) |
+| :--- | :---: | :---: |
+| **Arquitectura** | CNN personalizada | MobileNetV2 preentrenado |
+| **Test Accuracy** | **93.22%** | 91.19% |
+| **Test F1 (Sonríe)** | **0.8820** | 0.8412 |
+| **Test AUC** | **0.9731** | 0.9622 |
+| **Umbral recomendado** | 0.34 | 0.51 |
+| **Latencia estimada** | **~25.25 ms / cara** | ~157.88 ms / cara |

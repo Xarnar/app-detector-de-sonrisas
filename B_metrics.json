@@ -1,0 +1,23 @@
+{
+  "modelo": "B_mobilenetv2_transfer_learning",
+  "quick_test": false,
+  "epocas_cabeza": 10,
+  "epocas_finetuning": 17,
+  "minutos_entrenamiento": 2.62,
+  "umbral_recomendado": 0.5099999999999998,
+  "test_accuracy": 0.9118987341772152,
+  "test_f1_sonrie": 0.8412408759124088,
+  "test_auc": 0.9622020789301674,
+  "matriz_confusion": [
+    [
+      1340,
+      82
+    ],
+    [
+      92,
+      461
+    ]
+  ],
+  "ms_por_cara": 157.88,
+  "preprocesado": "gris, 64x64, float32 0-255, forma (1,64,64,1); resize 96 + 3 canales + [-1,1] dentro del modelo"
+}

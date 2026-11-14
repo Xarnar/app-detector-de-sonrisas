@@ -1,4 +1,7 @@
-# Python 3.10-3.12 recomendado (TensorFlow aún no soporta todas las versiones nuevas)
-opencv-python>=4.9
+# Python 3.10-3.12 recomendado
+# OpenCV 4.x (la serie 5.x no trae el importador Caffe que necesita la red de la Práctica 6)
+opencv-python>=4.9,<5
 numpy
+pillow
 tensorflow>=2.16
+# tkinter viene con Python en Windows/macOS. En Linux: sudo apt install python3-tk
