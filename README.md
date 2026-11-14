@@ -47,6 +47,10 @@ Cámara / Video
 ├── modelo/                         # Pesos y arquitectura del detector Caffe SSD
 │   ├── deploy.prototxt
 │   └── res10_300x300_ssd_iter_140000.caffemodel
+├── notebooks/                      # Notebooks Jupyter de entrenamiento y experimentos
+│   ├── notebook-1-modelo-a-cnn-desde-cero-smiles.ipynb
+│   ├── Notebook 2_Modelo B Transfer learning con MobileNetV2 (SMILES).ipynb
+│   └── pr-ctica-6-detecci-n-de-rostros-con-ventana-desl.ipynb
 ├── requirements.txt                # Dependencias del proyecto
 └── README.md                       # Documentación
 ```
