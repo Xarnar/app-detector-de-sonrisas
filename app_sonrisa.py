@@ -11,7 +11,18 @@ from collections import deque
 import cv2
 import numpy as np
 
-YUNET_FILE = "face_detection_yunet_2023mar.onnx"
+def find_file(filename, search_dirs=("models", ".")):
+    if os.path.exists(filename):
+        return filename
+    for d in search_dirs:
+        p = os.path.join(d, filename)
+        if os.path.exists(p):
+            return p
+    pref = "models" if os.path.isdir("models") else "."
+    return os.path.join(pref, filename) if pref != "." else filename
+
+
+YUNET_FILE = find_file("face_detection_yunet_2023mar.onnx")
 YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
              "face_detection_yunet/face_detection_yunet_2023mar.onnx")
 IMG_SIZE = 64            # debe coincidir con el entrenamiento
@@ -20,13 +31,14 @@ GREEN, RED, WHITE = (60, 200, 60), (50, 50, 230), (255, 255, 255)
 
 # ----------------------------------------------------------------- detector
 def load_detector(path, score_thr):
+    path = find_file(path)
     if not os.path.exists(path):
         print(f"Descargando YuNet a {path} ...")
         try:
             urllib.request.urlretrieve(YUNET_URL, path)
         except Exception as e:
             raise SystemExit(f"No se pudo descargar YuNet ({e}).\n"
-                             f"Descárgalo manualmente de:\n{YUNET_URL}\ny ponlo junto a este script.")
+                             f"Descárgalo manualmente de:\n{YUNET_URL}\ny ponlo en {path}.")
     return cv2.FaceDetectorYN.create(path, "", (320, 320), score_thr, 0.3, 10)
 
 
@@ -43,11 +55,12 @@ def detect_faces(detector, frame):
 # --------------------------------------------------------------- clasificador
 def load_classifier(path):
     """Devuelve una función batch(N,64,64,1 float32 0-255) -> probabilidades (N,), o None."""
-    if not os.path.exists(path):
+    resolved = find_file(path) if not os.path.exists(path) else path
+    if not os.path.exists(resolved):
         print(f"[aviso] No se encontró {path}: modo solo-detección (sin clasificar).")
         return None
     from tensorflow import keras           # import tardío: la app arranca rápido sin modelo
-    model = keras.models.load_model(path)
+    model = keras.models.load_model(resolved)
     model(np.zeros((1, IMG_SIZE, IMG_SIZE, 1), np.float32), training=False)   # calentamiento
     return lambda batch: model(batch, training=False).numpy().ravel()
 
@@ -149,8 +162,8 @@ def debug_strip(crops):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="0", help="índice de cámara (0,1..) o ruta de un video")
-    ap.add_argument("--model", default="model_A_cnn.keras")
-    ap.add_argument("--metrics", default="A_metrics.json", help="para leer el umbral recomendado")
+    ap.add_argument("--model", default=find_file("model_A_cnn.keras"))
+    ap.add_argument("--metrics", default=find_file("A_metrics.json"), help="para leer el umbral recomendado")
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--margin", type=float, default=-0.10,
                     help="Fracción del lado a añadir alrededor del recorte YuNet. "
@@ -167,8 +180,9 @@ def main():
     thr = args.threshold
     if thr is None:
         thr = 0.5
-        if os.path.exists(args.metrics):
-            thr = json.load(open(args.metrics)).get("umbral_recomendado", 0.5)
+        metrics_file = find_file(args.metrics) if not os.path.exists(args.metrics) else args.metrics
+        if os.path.exists(metrics_file):
+            thr = json.load(open(metrics_file)).get("umbral_recomendado", 0.5)
     margin = args.margin
 
     detector = load_detector(YUNET_FILE, args.det_score)

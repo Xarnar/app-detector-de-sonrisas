@@ -39,18 +39,18 @@ Cámara / Video
 ├── smile_core.py                   # Núcleo modular: detectores, modelos, tracking y pipeline
 ├── app_sonrisa.py                  # Versión de consola con OpenCV
 ├── practica_6_deteccion_rostros.py # Módulo de ventana deslizante + pirámide
-├── model_A_cnn.keras               # Pesos del Modelo A (CNN desde cero)
-├── A_metrics.json                  # Métricas y umbral óptimo del Modelo A
-├── model_B_mobilenetv2.keras       # Pesos del Modelo B (MobileNetV2)
-├── B_metrics.json                  # Métricas y umbral óptimo del Modelo B
-├── face_detection_yunet_2023mar.onnx # Pesos del detector YuNet
-├── modelo/                         # Pesos y arquitectura del detector Caffe SSD
-│   ├── deploy.prototxt
-│   └── res10_300x300_ssd_iter_140000.caffemodel
+├── models/                         # Modelos entrenados, pesos y métricas
+│   ├── model_A_cnn.keras           # Pesos del Modelo A (CNN desde cero)
+│   ├── A_metrics.json              # Métricas y umbral óptimo del Modelo A
+│   ├── model_B_mobilenetv2.keras   # Pesos del Modelo B (MobileNetV2 Transfer Learning)
+│   ├── B_metrics.json              # Métricas y umbral óptimo del Modelo B
+│   ├── face_detection_yunet_2023mar.onnx # Detector facial YuNet
+│   ├── deploy.prototxt             # Arquitectura Caffe SSD ResNet-10
+│   └── res10_300x300_ssd_iter_140000.caffemodel # Pesos Caffe SSD ResNet-10
 ├── notebooks/                      # Notebooks Jupyter de entrenamiento y experimentos
-│   ├── notebook-1-modelo-a-cnn-desde-cero-smiles.ipynb
-│   ├── Notebook 2_Modelo B Transfer learning con MobileNetV2 (SMILES).ipynb
-│   └── pr-ctica-6-detecci-n-de-rostros-con-ventana-desl.ipynb
+│   ├── 01_modelo_A_cnn_desde_cero.ipynb
+│   ├── 02_modelo_B_mobilenetv2_transfer_learning.ipynb
+│   └── 03_practica_6_deteccion_rostros_ventana_deslizante.ipynb
 ├── requirements.txt                # Dependencias del proyecto
 └── README.md                       # Documentación
 ```

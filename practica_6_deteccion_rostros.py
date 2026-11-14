@@ -40,8 +40,18 @@ MEAN_BGR = (104.0, 177.0, 123.0)   # media con la que fue entrenada la red
 NET_INPUT = (300, 300)             # tamaño de entrada fijo del SSD
 
 
-def descargar_modelo(directorio="."):
+def resolver_directorio_modelo(directorio="models"):
+    if directorio and os.path.exists(os.path.join(directorio, PROTO_NAME)):
+        return directorio
+    for d in ("models", "modelo", "."):
+        if os.path.exists(os.path.join(d, PROTO_NAME)):
+            return d
+    return directorio or "models"
+
+
+def descargar_modelo(directorio="models"):
     """Descarga deploy.prototxt y los pesos .caffemodel si no existen."""
+    directorio = resolver_directorio_modelo(directorio)
     os.makedirs(directorio, exist_ok=True)
     rutas = []
     for nombre, url in ((PROTO_NAME, PROTO_URL), (MODEL_NAME, MODEL_URL)):
@@ -53,8 +63,9 @@ def descargar_modelo(directorio="."):
     return rutas[0], rutas[1]
 
 
-def cargar_red(directorio="."):
+def cargar_red(directorio="models"):
     """Carga la red ResNet-10 SSD con pesos oficiales (sin inicialización aleatoria)."""
+    directorio = resolver_directorio_modelo(directorio)
     if not hasattr(cv2.dnn, "readNetFromCaffe"):
         raise RuntimeError(
             f"OpenCV {cv2.__version__} no incluye el importador Caffe. "
@@ -294,7 +305,8 @@ def main(argv=None):
                     help="margen de contexto alrededor de cada ventana (fracción del lado)")
     ap.add_argument("--max-lado", type=int, default=800,
                     help="reduce imágenes más grandes (ahorra tiempo); 0 = no reducir")
-    ap.add_argument("--modelo-dir", default="modelo", help="carpeta del modelo Caffe")
+    default_dir = "models" if os.path.isdir("models") else "modelo"
+    ap.add_argument("--modelo-dir", default=default_dir, help="carpeta del modelo Caffe")
     ap.add_argument("--salida", default="resultado_deteccion.png", help="imagen de salida")
     ap.add_argument("--json", default=None, help="guardar detecciones en JSON (opcional)")
     a = ap.parse_args(argv)

@@ -293,15 +293,23 @@ class App:
             self._load_detector(name)
 
     def _refresh_models(self):
-        files = sorted(glob.glob(os.path.join(self.args.models_dir, "*.keras")))
-        self.model_files = {os.path.basename(f): f for f in files}
+        dirs = [self.args.models_dir]
+        for extra in ("models", "."):
+            if extra not in dirs and os.path.isdir(extra):
+                dirs.append(extra)
+        self.model_files = {}
+        for d in dirs:
+            for f in sorted(glob.glob(os.path.join(d, "*.keras"))):
+                name = os.path.basename(f)
+                if name not in self.model_files:
+                    self.model_files[name] = f
         self.model_cb["values"] = [NO_MODEL] + list(self.model_files)
 
     def _initial_model(self):
         if self.args.model:
             return self.args.model
-        pref = os.path.join(self.args.models_dir, "model_A_cnn.keras")
-        if os.path.exists(pref):
+        pref = sc.find_file("model_A_cnn.keras", (self.args.models_dir, "models", "."))
+        if pref and os.path.exists(pref):
             return pref
         return next(iter(self.model_files.values()), None)
 
@@ -621,7 +629,8 @@ class App:
 def parse_args(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="0", help="índice de cámara o ruta de un video")
-    ap.add_argument("--models-dir", default=".", help="carpeta con los .keras y sus *_metrics.json")
+    default_models_dir = "models" if os.path.isdir("models") else "."
+    ap.add_argument("--models-dir", default=default_models_dir, help="carpeta con los .keras y sus *_metrics.json")
     ap.add_argument("--model", default=None, help="modelo inicial (ruta a un .keras)")
     return ap.parse_args(argv)
 

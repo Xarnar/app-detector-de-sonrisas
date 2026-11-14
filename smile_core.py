@@ -19,12 +19,25 @@ import numpy as np
 
 IMG_SIZE = 64
 
+def find_file(filename, search_dirs=("models", "modelo", ".")):
+    """Busca un archivo en las carpetas comunes y devuelve su ruta si existe."""
+    if os.path.isabs(filename) and os.path.exists(filename):
+        return filename
+    if os.path.exists(filename):
+        return filename
+    for d in search_dirs:
+        p = os.path.join(d, filename)
+        if os.path.exists(p):
+            return p
+    pref = "models" if os.path.isdir("models") else "."
+    return os.path.join(pref, filename) if pref != "." else filename
+
 YUNET_FILE = "face_detection_yunet_2023mar.onnx"
 YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
              "face_detection_yunet/face_detection_yunet_2023mar.onnx")
 
 # Red de la Práctica 6 (ResNet-10 SSD, pesos oficiales de OpenCV)
-SSD_DIR = "modelo"
+SSD_DIR = "models" if os.path.exists(os.path.join("models", "deploy.prototxt")) else ("modelo" if os.path.exists("modelo") else "models")
 SSD_PROTO = "deploy.prototxt"
 SSD_WEIGHTS = "res10_300x300_ssd_iter_140000.caffemodel"
 SSD_PROTO_URL = ("https://raw.githubusercontent.com/opencv/opencv/4.x/"
@@ -62,7 +75,9 @@ def _download(url, path, min_bytes):
 class YuNetDetector:
     name = "yunet"
 
-    def __init__(self, path=YUNET_FILE):
+    def __init__(self, path=None):
+        if path is None:
+            path = find_file(YUNET_FILE)
         _download(YUNET_URL, path, 100_000)
         self.det = cv2.FaceDetectorYN.create(path, "", (320, 320), 0.7, 0.3, 10)
 
@@ -77,12 +92,16 @@ class YuNetDetector:
         return [tuple(int(v) for v in f[:4]) for f in faces]
 
 
-def load_ssd_net(folder=SSD_DIR):
+def load_ssd_net(folder=None):
     if not hasattr(cv2.dnn, "readNetFromCaffe"):
         raise RuntimeError(f"OpenCV {cv2.__version__} no incluye el importador Caffe "
                            "(serie 5.x). Instala: pip install \"opencv-python<5\"")
-    proto = _download(SSD_PROTO_URL, os.path.join(folder, SSD_PROTO), 1_000)
-    weights = _download(SSD_WEIGHTS_URL, os.path.join(folder, SSD_WEIGHTS), 1_000_000)
+    if folder is None:
+        folder = SSD_DIR
+    proto_path = find_file(SSD_PROTO, (folder, "models", "modelo", "."))
+    weights_path = find_file(SSD_WEIGHTS, (folder, "models", "modelo", "."))
+    proto = _download(SSD_PROTO_URL, proto_path, 1_000)
+    weights = _download(SSD_WEIGHTS_URL, weights_path, 1_000_000)
     return cv2.dnn.readNetFromCaffe(proto, weights)
 
 
@@ -358,16 +377,24 @@ def find_threshold(model_path):
     if m:
         patterns.append(f"{m.group(1)}_metrics*.json")
     patterns.append(os.path.splitext(base)[0] + "*metrics*.json")
-    for pat in patterns:
-        files = sorted(glob.glob(os.path.join(folder, pat)), key=os.path.getmtime, reverse=True)
-        for f in files:
-            try:
-                data = json.load(open(f, encoding="utf-8"))
-                if data.get("quick_test"):
+    
+    search_folders = [folder]
+    for extra in ("models", "modelo", "."):
+        abs_extra = os.path.abspath(extra)
+        if abs_extra not in search_folders and os.path.isdir(abs_extra):
+            search_folders.append(abs_extra)
+
+    for f_dir in search_folders:
+        for pat in patterns:
+            files = sorted(glob.glob(os.path.join(f_dir, pat)), key=os.path.getmtime, reverse=True)
+            for f in files:
+                try:
+                    data = json.load(open(f, encoding="utf-8"))
+                    if data.get("quick_test"):
+                        continue
+                    return float(data["umbral_recomendado"]), os.path.basename(f)
+                except Exception:
                     continue
-                return float(data["umbral_recomendado"]), os.path.basename(f)
-            except Exception:
-                continue
     return 0.5, None
 
 
