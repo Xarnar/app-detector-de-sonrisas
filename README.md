@@ -35,11 +35,11 @@ Cámara / Video
 ## Estructura del proyecto
 
 ```text
-├── app_gui.py                      # Interfaz gráfica principal (Tkinter)
+├── app_gui.py                      # Interfaz gráfica v2 (CustomTkinter, temas, animaciones)
 ├── smile_core.py                   # Núcleo modular: detectores, modelos, tracking y pipeline
 ├── app_sonrisa.py                  # Versión de consola con OpenCV
 ├── practica_6_deteccion_rostros.py # Módulo de ventana deslizante + pirámide
-├── models/                         # Modelos entrenados, pesos y métricas
+├── models/                         # Modelos entrenados, pesos y métricas (no mover)
 │   ├── model_A_cnn.keras           # Pesos del Modelo A (CNN desde cero)
 │   ├── A_metrics.json              # Métricas y umbral óptimo del Modelo A
 │   ├── model_B_mobilenetv2.keras   # Pesos del Modelo B (MobileNetV2 Transfer Learning)
@@ -50,8 +50,10 @@ Cámara / Video
 ├── notebooks/                      # Notebooks Jupyter de entrenamiento y experimentos
 │   ├── 01_modelo_A_cnn_desde_cero.ipynb
 │   ├── 02_modelo_B_mobilenetv2_transfer_learning.ipynb
-│   └── 03_practica_6_deteccion_rostros_ventana_deslizante.ipynb
-├── requirements.txt                # Dependencias del proyecto
+│   ├── 03_practica_6_deteccion_rostros_ventana_deslizante.ipynb
+│   └── 04_gradcam_y_errores_modelo_A.ipynb
+├── resultados/                     # Resultados de experimentos (imágenes, gráficos)
+├── requirements.txt                # Dependencias del proyecto (incluye customtkinter)
 └── README.md                       # Documentación
 ```
 
@@ -76,17 +78,25 @@ pip install -r requirements.txt
 
 ## Uso
 
-### 1. Interfaz Gráfica (Recomendada)
+### 1. Interfaz Gráfica v2 (Recomendada)
 
 ```powershell
-# Usando cámara por defecto
+# Usando cámara por defecto (tema guardado en config.json)
 python app_gui.py
 
-# O usando un archivo de video
-python app_gui.py --source video.mp4
+# Usando un archivo de video con tema claro
+python app_gui.py --source video.mp4 --theme light
+
+# Modo máximo rendimiento (sin animaciones)
+python app_gui.py --no-anim
+
+# Tema oscuro explícito
+python app_gui.py --theme dark
 ```
 
 **Controles en la interfaz:**
+- **Barra superior**: Selector de tema (claro/oscuro/sistema) e interruptor "Modo rendimiento".
+- **Panel en pestañas**: Fuente · Detector · Clasif. · P6/Acc. · Render.
 - **Selector de detector**: Cambia entre YuNet, SSD ResNet-10, Haar o Práctica 6 ROI.
 - **Selector de modelo**: Detecta automáticamente los archivos `.keras` en la carpeta y carga el umbral de su respectivo `*_metrics.json`.
 - **Deslizadores en vivo**:
@@ -94,7 +104,16 @@ python app_gui.py --source video.mp4
   - *Umbral de sonrisa*: Probabilidad de corte para catalogar `Sonríe` vs `No sonríe`.
   - *Suavizado*: Ventana de fotogramas para promediar la predicción en cada rostro.
 - **Botón "Analizar fotograma con la Práctica 6"**: Congela el fotograma y corre la pirámide multiescala con ventana deslizante, mostrando la comparativa de velocidad frente al detector en vivo.
-- **Atajos de teclado:** `q` / `Esc` (salir), `s` (captura de pantalla), `r` (iniciar/detener grabación de video), `d` (mostrar/ocultar tira de recortes 64×64).
+- **Atajos de teclado:**
+
+| Tecla | Acción |
+|-------|--------|
+| `q` / `Esc` | Salir |
+| `s` | Captura → `salidas/` |
+| `r` | Grabar / detener → `salidas/` |
+| `d` | Mostrar / ocultar recortes 64×64 |
+| `F11` | Pantalla completa |
+| `H` | Mostrar / ocultar panel lateral |
 
 ---
 

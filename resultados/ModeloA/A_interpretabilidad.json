@@ -1,0 +1,27 @@
+{
+  "umbral": 0.33999999999999986,
+  "test_accuracy": 0.9321518987341773,
+  "test_f1": 0.8820422535211268,
+  "matriz_confusion": [
+    [
+      1340,
+      82
+    ],
+    [
+      52,
+      501
+    ]
+  ],
+  "atencion_mitad_inferior": {
+    "sonrisas acertadas (TP)": 0.9678522348403931,
+    "no-sonrisas acertadas (TN)": 0.44257426261901855,
+    "falsas sonrisas (FP)": 0.9500587582588196,
+    "sonrisas perdidas (FN)": 0.3510490655899048
+  },
+  "brillo_medio": {
+    "aciertos": 128.23927307128906,
+    "FP": 119.83908081054688,
+    "FN": 130.77767944335938
+  },
+  "fotos_propias": null
+}

@@ -4,4 +4,5 @@ opencv-python>=4.9,<5
 numpy
 pillow
 tensorflow>=2.16
+customtkinter>=5.2
 # tkinter viene con Python en Windows/macOS. En Linux: sudo apt install python3-tk
