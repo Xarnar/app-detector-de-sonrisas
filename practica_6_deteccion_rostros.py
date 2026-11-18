@@ -7,7 +7,9 @@ Práctica 6: Detección de Rostros con Ventana Deslizante + Pirámide de Imágen
 Propósito del módulo
 --------------------
 Pipeline clásico-convolucional de detección de rostros:
-  1. Pirámide de imágenes (multiescala, conserva la relación de aspecto).
+  1. Pirámide de imágenes (multiescala, conserva la relación de aspecto). Reduce
+     la imagen para rostros MAYORES que la ventana (desafío 2a) y, opcionalmente,
+     la amplía para rostros MENORES que la ventana (desafío 2b, ``--upsample``).
   2. Ventana deslizante de tamaño fijo (96×96 px por defecto) sobre cada nivel.
   3. Cada ventana se clasifica en lotes con la red ResNet-10 SSD de Caffe,
      cargada con cv2.dnn.readNetFromCaffe.
@@ -17,6 +19,7 @@ Pipeline clásico-convolucional de detección de rostros:
 Cómo ejecutarlo
 ---------------
     python practica_6_deteccion_rostros.py ruta/imagen.jpg --step 16 --scale 1.25
+    python practica_6_deteccion_rostros.py ruta/imagen.jpg --step 24 --scale 1.4 --upsample 1
 
 Dependencias
 ------------
@@ -48,6 +51,8 @@ MODEL_URL = ("https://raw.githubusercontent.com/opencv/opencv_3rdparty/"
              "dnn_samples_face_detector_20170830/" + MODEL_NAME)
 MEAN_BGR = (104.0, 177.0, 123.0)   # media de los canales BGR con la que fue entrenada la red
 NET_INPUT = (300, 300)             # tamaño de entrada fijo requerido por el SSD
+MAX_LADO_AMPLIADO = 1600           # una ampliación de la pirámide se omite si su lado mayor lo supera
+FACTOR_ROSTRO_MIN = 0.775          # ≈ sqrt(0.60): lado mínimo del rostro / lado de la ventana con min_cover=0.60
 
 
 def resolver_directorio_modelo(directorio="models"):
@@ -118,31 +123,48 @@ def cargar_red(directorio="models"):
 # --------------------------------------------------------------------------
 # Desafío 2: variabilidad de tamaño -> Pirámide de imágenes
 # --------------------------------------------------------------------------
-def image_pyramid(image, scale=1.25, min_size=(96, 96)):
+def image_pyramid(image, scale=1.25, min_size=(96, 96), upsample_levels=0):
     """Generador de pirámide de imágenes multiescala.
 
-    En el nivel ``l`` la imagen se reduce por ``scale**l`` (mismo factor en
-    ancho y alto => se preserva el aspect ratio).  Se detiene cuando algún
-    lado de la imagen reducida es menor que ``min_size``.
+    El nivel ``l`` se obtiene dividiendo la imagen por ``s = scale**l`` (mismo
+    factor en ancho y alto => se preserva el aspect ratio):
 
-    El factor de escala acumulado ``s = scale**level`` permite después
-    mapear las coordenadas del nivel reducido a la imagen original
-    multiplicando por ``s`` (ver ``detect_faces``).
+    * ``l > 0``: REDUCCIÓN (``s > 1``, ``cv2.INTER_AREA``).  Permite que un rostro
+      mayor que la ventana quepa en ella (desafío 2a).  Se detiene cuando algún
+      lado de la imagen reducida es menor que ``min_size``.
+    * ``l = 0``: imagen original (``s = 1``).
+    * ``l < 0``: AMPLIACIÓN (``s < 1``, ``cv2.INTER_CUBIC``), solo si
+      ``upsample_levels > 0``.  Permite que un rostro menor que la ventana la
+      llene (desafío 2b).  El nivel ``-k`` usa ``s = scale**(-k)``, ``k = 1..n``.
+
+    Orden de salida: de mayor ampliación a mayor reducción (``-n, ..., -1, 0, 1, ...``).
+    Un nivel ampliado se omite si su lado mayor supera ``MAX_LADO_AMPLIADO`` (1600 px).
+
+    El factor ``s`` permite mapear las coordenadas de cualquier nivel a la imagen
+    original multiplicando por ``s`` (ver ``detect_faces``); funciona con ``s < 1``.
 
     Args:
         image (np.ndarray): Imagen BGR original.
-        scale (float): Factor de reducción entre niveles (p.ej. 1.25 → cada
+        scale (float): Factor entre niveles consecutivos (p.ej. 1.25 → cada
             nivel es 1/1.25 del anterior en cada dimensión).
         min_size (tuple[int, int]): Tamaño mínimo (ancho, alto) para seguir
-            generando niveles.  Cuando algún lado cae por debajo de este valor
-            se detiene la pirámide.
+            generando niveles de reducción.
+        upsample_levels (int): Número de niveles de ampliación (0 = solo reducción,
+            comportamiento clásico).
 
     Yields:
-        tuple[int, float, np.ndarray]: (nivel, factor_escala, imagen_reducida).
+        tuple[int, float, np.ndarray]: (nivel, factor_escala, imagen_del_nivel).
             ``factor_escala`` es ``scale**nivel`` respecto a la imagen original.
     """
     h0, w0 = image.shape[:2]
-    # Nivel 0: imagen original sin reducir; factor = 1.0
+    # Niveles de ampliación: de la mayor ampliación a la menor (s = scale**-k, k = n..1)
+    for k in range(upsample_levels, 0, -1):
+        s = scale ** (-k)
+        w, h = int(round(w0 / s)), int(round(h0 / s))
+        if max(w, h) > MAX_LADO_AMPLIADO:
+            continue
+        yield -k, s, cv2.resize(image, (w, h), interpolation=cv2.INTER_CUBIC)
+    # Nivel 0: imagen original sin modificar; factor = 1.0
     yield 0, 1.0, image
     level = 0
     while True:
@@ -161,8 +183,8 @@ def image_pyramid(image, scale=1.25, min_size=(96, 96)):
 def sliding_window(image, step_size, window_size):
     """Recorre la imagen con una ventana de tamaño fijo, generando parches.
 
-    La ventana siempre es de 96×96 px (controlado por ``window_size``).
-    El paso ``step_size`` controla cuántos píxeles avanza en cada iteración:
+    El tamaño de la ventana lo fija ``window_size`` (96×96 px por defecto en el
+    resto del módulo).  El paso ``step_size`` controla cuántos píxeles avanza en cada iteración:
     un paso pequeño (p.ej. 8-16) da más cobertura a costa de más ventanas.
 
     Args:
@@ -170,7 +192,7 @@ def sliding_window(image, step_size, window_size):
         step_size (int): Desplazamiento en píxeles entre ventanas consecutivas
             (tanto en X como en Y). Configurable vía --step en la CLI.
         window_size (tuple[int, int]): (ancho, alto) de la ventana en píxeles.
-            Normalmente (96, 96).
+            Por defecto el módulo usa (96, 96).
 
     Yields:
         tuple[int, int, np.ndarray]: (x, y, parche) donde (x, y) es la esquina
@@ -195,7 +217,7 @@ def puntuar_lote(net, patches, min_cover=0.60, context=0.50):
     entrenamiento, que equivale a 0 tras restar ``MEAN_BGR``) de ``context`` x
     lado de la ventana por cada lado.  Sin él, un parche de 96 px ampliado a
     300x300 queda "fuera de distribución" y el SSD produce falsos positivos
-    (p.ej. detecta un rostro con ~0.98 de confianza en una cuchara).  El contexto
+    (p.ej. una cuchara de la imagen del café se acepta con > 0.9 de confianza; ver ablación 2×2 del notebook).  El contexto
     rodea el parche de colores neutros para que la red "vea" el parche como si
     estuviera en el centro de una imagen más grande.
 
@@ -274,7 +296,7 @@ def non_max_suppression(boxes, scores, overlap_thresh=0.3, contain_thresh=None):
     Extensión opcional (``contain_thresh``): también elimina las cajas cuya
     intersección con la mejor caja supera esa fracción de SU PROPIA área.
     Esto elimina cajas pequeñas contenidas dentro de otra mayor (p.ej. una
-    caja de 96 px dentro de otra de 190 px tendría IoU ≈ 0.25, que el NMS
+    caja de 96 px dentro de otra de 190 px tendría IoU ≈ 0.26, que el NMS
     clásico no quitaría).
 
     Args:
@@ -322,7 +344,8 @@ def non_max_suppression(boxes, scores, overlap_thresh=0.3, contain_thresh=None):
 # --------------------------------------------------------------------------
 def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
                  conf_threshold=0.90, overlap_thresh=0.3, batch_size=32,
-                 min_cover=0.60, context=0.50, contain_thresh=0.40, min_size=None):
+                 min_cover=0.60, context=0.50, contain_thresh=0.40, min_size=None,
+                 upsample_levels=0):
     """Ejecuta el pipeline completo: pirámide + ventana deslizante + red + NMS.
 
     Los parches de TODOS los niveles de la pirámide se acumulan en lotes de
@@ -335,7 +358,8 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
     se acepta, sus coordenadas reales en la imagen original son:
         x_orig = x * s,  y_orig = y * s.
     Esto se debe a que el nivel ``l`` fue creado dividiendo la imagen original
-    por ``s``, por lo que multiplicar por ``s`` deshace esa reducción.
+    por ``s``, por lo que multiplicar por ``s`` deshace esa reducción (``s > 1``)
+    o esa ampliación (``s < 1``, niveles de ``upsample_levels``).
 
     Args:
         image_bgr (np.ndarray): Imagen BGR de entrada.
@@ -352,6 +376,8 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
         contain_thresh (float): Umbral de contención del NMS (ver ``non_max_suppression``).
         min_size (tuple[int, int] | None): Tamaño mínimo de imagen en la pirámide;
             si None se usa ``window_size``.
+        upsample_levels (int): Niveles de ampliación de la pirámide (0 = solo
+            reducción, comportamiento clásico). Ver ``image_pyramid``.
 
     Returns:
         dict: Diccionario con las siguientes claves:
@@ -364,6 +390,11 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
             - ``detecciones_brutas`` (int): Número de ventanas aceptadas antes del NMS.
             - ``detecciones_finales`` (int): Número de rostros tras el NMS.
             - ``tiempo_s`` (float): Tiempo total en segundos.
+            - ``upsample_levels`` (int): Niveles de ampliación solicitados.
+            - ``tam_min_rostro_px`` (float): Lado mínimo de rostro (en px de la imagen
+              original) que una ventana puede alinear con ``min_cover=0.60``:
+              ``0.775 * ancho_ventana * s_min``, con ``s_min = scale**(-upsample_levels)``
+              (o la mayor ampliación realmente usada si el tope de 1600 px omitió niveles).
     """
     win_w, win_h = window_size
     # Un nivel cuyo lado sea menor que la ventana no puede contener ni una ventana completa
@@ -374,6 +405,7 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
     raw_boxes, raw_scores, raw_rank = [], [], []
     niveles, ventanas_por_nivel = 0, []
     total = 0
+    s_min = 1.0                                 # menor factor s realmente usado (mayor ampliación)
     buf_patches, buf_meta = [], []
 
     def vaciar_lote():
@@ -392,8 +424,9 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
         buf_patches.clear()
         buf_meta.clear()
 
-    for level, s, resized in image_pyramid(image_bgr, scale, min_size):
+    for level, s, resized in image_pyramid(image_bgr, scale, min_size, upsample_levels):
         niveles += 1
+        s_min = min(s_min, s)
         n_nivel = 0
         for x, y, patch in sliding_window(resized, step_size, window_size):
             buf_patches.append(patch)
@@ -418,6 +451,8 @@ def detect_faces(image_bgr, net, window_size=(96, 96), step_size=16, scale=1.25,
         "niveles": niveles, "ventanas_por_nivel": ventanas_por_nivel,
         "total_ventanas": total, "detecciones_brutas": int(len(raw_boxes)),
         "detecciones_finales": int(len(keep)), "tiempo_s": elapsed,
+        "upsample_levels": int(upsample_levels),
+        "tam_min_rostro_px": FACTOR_ROSTRO_MIN * win_w * s_min,
     }
 
 
@@ -475,6 +510,8 @@ def main(argv=None):
     ap.add_argument("--batch", type=int, default=32, help="tamaño de lote")
     ap.add_argument("--contexto", type=float, default=0.50,
                     help="margen de contexto alrededor de cada ventana (fracción del lado)")
+    ap.add_argument("--upsample", type=int, default=0,
+                    help="niveles de AMPLIACIÓN de la pirámide para rostros menores que la ventana")
     ap.add_argument("--max-lado", type=int, default=800,
                     help="reduce imágenes más grandes (ahorra tiempo); 0 = no reducir")
     default_dir = "models" if os.path.isdir("models") else "modelo"
@@ -495,10 +532,12 @@ def main(argv=None):
     net = cargar_red(a.modelo_dir)
     r = detect_faces(img, net, (a.ventana, a.ventana), a.step, a.scale, a.conf,
                      a.nms, a.batch, min_cover=a.alineacion, context=a.contexto,
-                     contain_thresh=a.contencion)
+                     contain_thresh=a.contencion, upsample_levels=a.upsample)
     print(f"Niveles: {r['niveles']} | Ventanas: {r['total_ventanas']} | "
           f"Brutas: {r['detecciones_brutas']} | Finales: {r['detecciones_finales']} | "
           f"Tiempo: {r['tiempo_s']:.1f} s")
+    if a.upsample > 0:
+        print(f"Rostro mínimo detectable ≈ {r['tam_min_rostro_px']:.0f} px (con {a.upsample} nivel(es) de ampliación)")
     for b, s in zip(r["boxes"], r["scores"]):
         print(f"  Rostro {s * 100:.1f}%  caja={b.tolist()}")
     cv2.imwrite(a.salida, draw_detections(img, r["boxes"], r["scores"]))

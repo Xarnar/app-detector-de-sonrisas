@@ -577,6 +577,7 @@ class App:
         self.p6_busy   = False
         self.p6_state, self.p6_frame, self.p6_last = None, None, 0.0
         self.p6_cancel = threading.Event()
+        self.p6_upsample_var = ctk.BooleanVar(value=False)  # Rostros pequeños (ampliación de pirámide)
         self.freeze_img, self.freeze_dirty = None, False
 
         # Estado de la visualización
@@ -968,8 +969,30 @@ class App:
         ctk.CTkOptionMenu(
             padre,
             variable=self.p6_var,
-            values=list(P6_PRESETS)
+            values=list(P6_PRESETS),
+            command=lambda _: self._actualizar_tam_min_p6()
         ).pack(fill="x", pady=(4, 6))
+
+        # Casilla: Rostros pequeños (ampliación de pirámide)
+        self.p6_upsample_chk = ctk.CTkCheckBox(
+            padre,
+            text="Rostros pequeños (más lento)",
+            variable=self.p6_upsample_var,
+            command=self._on_p6_upsample_toggle,
+            font=ctk.CTkFont(size=11),
+        )
+        self.p6_upsample_chk.pack(anchor="w", pady=(2, 2))
+
+        # Etiqueta: tamaño mínimo de rostro detectable
+        self.p6_min_size_lbl = ctk.CTkLabel(
+            padre,
+            text="",
+            font=ctk.CTkFont(size=9),
+            text_color=("gray50", "gray60"),
+            justify="left"
+        )
+        self.p6_min_size_lbl.pack(anchor="w", pady=(0, 6))
+        self._actualizar_tam_min_p6()
 
         # Botón de Práctica 6
         self.p6_btn = ctk.CTkButton(
@@ -983,6 +1006,7 @@ class App:
 
         if not self.p6_ok:
             self.p6_btn.configure(state="disabled")
+            self.p6_upsample_chk.configure(state="disabled")
             ctk.CTkLabel(
                 padre,
                 text="⚠ Falta practica_6_deteccion_rostros.py",
@@ -1141,7 +1165,8 @@ class App:
                 else:
                     if not self.p6_ok:
                         raise RuntimeError("Falta practica_6_deteccion_rostros.py")
-                    det = sc.P6RoiDetector(sc.load_ssd_net())
+                    upsample = 1 if (hasattr(self, "p6_upsample_var") and self.p6_upsample_var.get()) else 0
+                    det = sc.P6RoiDetector(sc.load_ssd_net(), upsample_levels=upsample)
             except Exception as e:                       # noqa: BLE001
                 msg = str(e)   # copiar el mensaje ANTES de salir del except
                 print(f"[detector {name}] {msg}")
@@ -1343,8 +1368,12 @@ class App:
                 time.sleep(0.03)
                 continue
 
-            # Pipeline: detectar + clasificar
-            faces, crops, t_det, t_cls = self.pipe.process(frame)
+            # Pipeline: detectar + clasificar (tolerante a excepciones transitorias)
+            try:
+                faces, crops, t_det, t_cls = self.pipe.process(frame)
+            except Exception as e:
+                print(f"[worker warning] Error en procesamiento de fotograma: {e}")
+                faces, crops, t_det, t_cls = [], [], 0.0, 0.0
 
             # Grad-CAM: mapa de atención (máx 3 caras, cada 3 frames, Tarea 5)
             anim_on = not self._perf_var.get()
@@ -1684,6 +1713,31 @@ class App:
         cv2.imwrite(nombre, self.freeze_img if self.freeze_img is not None else lat["img"])
         self.status.set(f"Captura guardada: {nombre}")
 
+    def _actualizar_tam_min_p6(self):
+        """Actualiza la etiqueta con el tamaño mínimo de rostro detectable."""
+        if not hasattr(self, "p6_min_size_lbl") or not hasattr(self, "p6_upsample_var"):
+            return
+        preset = self.p6_var.get()
+        _, scale = P6_PRESETS.get(preset, (24, 1.40))
+        upsample = 1 if self.p6_upsample_var.get() else 0
+        min_px = sc.p6_min_face_size(upsample_levels=upsample, scale=scale)
+        txt = f"Tamaño mín. detectable: ≈ {min_px:.0f} px"
+        if upsample > 0:
+            txt += f" (ampliación x{scale:.2f})"
+        self.p6_min_size_lbl.configure(text=txt)
+
+    def _on_p6_upsample_toggle(self):
+        """Gestiona el cambio de la casilla de rostros pequeños (upsample).
+
+        Si cambia mientras hay un análisis en curso, el nuevo valor se aplicará
+        al siguiente análisis. Si el detector actual es P6RoiDetector, actualiza
+        su atributo upsample_levels para el próximo escaneo o re-escaneo.
+        """
+        self._actualizar_tam_min_p6()
+        upsample = 1 if self.p6_upsample_var.get() else 0
+        if hasattr(self, "pipe") and isinstance(self.pipe.detector, sc.P6RoiDetector):
+            self.pipe.detector.upsample_levels = upsample
+
     def _toggle_p6(self):
         """Inicia, cancela o cierra el análisis de la Práctica 6."""
         if self.p6_busy:
@@ -1702,6 +1756,7 @@ class App:
             self.status.set("Aún no hay imagen para analizar")
             return
         step, scale = P6_PRESETS[self.p6_var.get()]
+        upsample = 1 if self.p6_upsample_var.get() else 0
         frame = lat["raw"].copy()
         self.p6_frame  = frame
         self.p6_state  = None
@@ -1710,9 +1765,9 @@ class App:
         self.freeze_dirty = True
         self.p6_busy     = True
         self.p6_btn.configure(text="Cancelar análisis")
-        threading.Thread(target=self._p6_job, args=(frame, step, scale), daemon=True).start()
+        threading.Thread(target=self._p6_job, args=(frame, step, scale, upsample), daemon=True).start()
 
-    def _p6_job(self, frame, step, scale):
+    def _p6_job(self, frame, step, scale, upsample=0):
         """Hilo del análisis de la Práctica 6."""
         try:
             st = dict(evaluated=[], accepted=[], scanning=[], final=[], done=0, total=0,
@@ -1720,7 +1775,8 @@ class App:
                       levels=[], level_imgs=[], n_raw=0)
             result = None
             for ev in sc.p6_scan(frame, sc.load_ssd_net(), step, scale,
-                                  batch=8, cancel=self.p6_cancel):
+                                  batch=8, cancel=self.p6_cancel,
+                                  upsample_levels=upsample):
                 ph = ev["phase"]
                 if ph == "cancelled":
                     self.post(self._p6_cancelled)
@@ -1748,7 +1804,8 @@ class App:
                      for x1, y1, x2, y2 in result["boxes"]]
             secs, nwin = result["elapsed"], result["total"]
             det, name = self.pipe.detector, self.pipe.det_name
-            lines = [f"Practica 6 (ventana deslizante): {nwin} ventanas, "
+            up_txt = f" (upsample {upsample})" if upsample > 0 else ""
+            lines = [f"Practica 6 (ventana deslizante): {nwin} ventanas{up_txt}, "
                      f"{secs:.1f} s, {len(boxes)} rostro(s)"]
             if det is not None and name != "p6roi":
                 t0 = time.perf_counter()

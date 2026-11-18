@@ -91,7 +91,33 @@ DEFAULT_MARGIN = {"yunet": 0.10, "ssd": 0.0, "haar": 0.10, "p6roi": 0.10}
 # Confianza mínima inicial por detector (en Haar se traduce a minNeighbors; en la Práctica 6 = 0.90)
 DEFAULT_SCORE = {"yunet": 0.70, "ssd": 0.70, "haar": 0.60, "p6roi": 0.90}
 
+# Constante de la Práctica 6: lado mínimo del rostro / lado de la ventana con min_cover=0.60
+FACTOR_ROSTRO_MIN = 0.775
+
 GREEN, RED, WHITE = (60, 200, 60), (50, 50, 230), (255, 255, 255)
+
+
+def p6_min_face_size(upsample_levels=0, scale=1.40, window_size=96):
+    """Devuelve el tamaño mínimo de rostro detectable (en píxeles) según upsample_levels.
+
+    Basado en el criterio de alineación de la Práctica 6 (min_cover=0.60, lo que
+    exige que el lado del rostro cubra al menos una fracción ≈ sqrt(0.60) = 0.775
+    del lado de la ventana).
+    Al usar niveles de ampliación (``upsample_levels > 0``), el menor factor de
+    escala en la pirámide es ``s_min = scale**(-upsample_levels)``, por lo que el
+    tamaño mínimo detectable en píxeles de la imagen original es:
+        tam_min = FACTOR_ROSTRO_MIN * window_size * s_min
+
+    Args:
+        upsample_levels (int): Niveles de ampliación de la pirámide (0 por defecto).
+        scale (float): Factor entre niveles consecutivos de la pirámide (1.40 por defecto).
+        window_size (int): Lado de la ventana fija en píxeles (96 por defecto).
+
+    Returns:
+        float: Lado mínimo estimado del rostro detectable en píxeles de la imagen original.
+    """
+    s_min = float(scale) ** (-max(0, int(upsample_levels)))
+    return float(FACTOR_ROSTRO_MIN * window_size * s_min)
 
 
 # ------------------------------------------------------------------ descargas
@@ -228,7 +254,7 @@ class SSDDetector:
         return boxes
 
 
-def run_practica6(frame, net, step=24, scale=1.40):
+def run_practica6(frame, net, step=24, scale=1.40, upsample_levels=0):
     """Ejecuta el algoritmo de la Práctica 6 (pirámide + ventana deslizante) sobre un frame.
 
     Relación con ``p6_scan``: esta función devuelve el resultado final de una sola vez,
@@ -242,6 +268,7 @@ def run_practica6(frame, net, step=24, scale=1.40):
         net (cv2.dnn_Net): Red SSD cargada con ``load_ssd_net()``.
         step (int): Paso de la ventana deslizante en píxeles.
         scale (float): Factor de reducción de la pirámide.
+        upsample_levels (int): Niveles de ampliación de la pirámide (0 por defecto).
 
     Returns:
         tuple[list[tuple], int, float]:
@@ -251,7 +278,8 @@ def run_practica6(frame, net, step=24, scale=1.40):
     """
     import practica_6_deteccion_rostros as p6
     t0 = time.perf_counter()
-    r = p6.detect_faces(frame, net, (96, 96), step, scale, 0.90, 0.30, 32, 0.60, 0.50, 0.40)
+    r = p6.detect_faces(frame, net, (96, 96), step, scale, 0.90, 0.30, 32, 0.60, 0.50, 0.40,
+                        upsample_levels=upsample_levels)
     secs = time.perf_counter() - t0
     raw = np.asarray(r["boxes"]).reshape(-1, 4)
     boxes = [(int(x1), int(y1), int(x2 - x1), int(y2 - y1)) for x1, y1, x2, y2 in raw]
@@ -311,6 +339,9 @@ class P6RoiDetector:
     ------------------------------------
     1) DETECCIÓN: Escaneo completo (pirámide + ventana deslizante sobre toda la imagen)
        en un hilo en segundo plano, una sola vez.  Mientras corre, el video sigue en vivo.
+       Con upsample_levels=1, el escaneo completo evalúa bastantes más ventanas (aprox.
+       el doble o más según la resolución), permitiendo detectar rostros pequeños a costa
+       de mayor tiempo de cómputo en el escaneo inicial y en los re-escaneos periódicos.
     2) SEGUIMIENTO: Una vez detectados los rostros, en cada frame solo desliza la ventana
        96×96 alrededor de las últimas posiciones conocidas (2×2 posiciones en ROI reducida),
        lo que es órdenes de magnitud más rápido que el escaneo completo.
@@ -325,17 +356,23 @@ class P6RoiDetector:
     # Permite descubrir caras nuevas que entraron al encuadre después del escaneo inicial.
     rescan_interval = 10.0
 
-    def __init__(self, net, step=32):
+    def __init__(self, net, step=32, upsample_levels=0):
         """Inicializa el detector con la red SSD.
 
         Args:
             net (cv2.dnn_Net): Red SSD cargada con ``load_ssd_net()``.
             step (int): Paso de la ventana durante el seguimiento.
+            upsample_levels (int): Niveles de ampliación para el escaneo inicial
+                y el re-escaneo (0 por defecto). Con 1 nivel el escaneo completo
+                evalúa bastantes más ventanas. El seguimiento por ROI no cambia.
         """
         self.net, self.step = net, step
+        self.upsample_levels = int(upsample_levels)
         self.boxes = []
         self.status = ""
         self._thread, self._done, self._found = None, False, []
+        self._scan_net = None             # instancia dedicada para escaneo de fondo (evita colisión de hilos)
+        self._lock = threading.Lock()     # salvaguarda adicional de sincronización
         # Estado para el re-escaneo periódico en segundo plano
         self._last_frame  = None          # frame más reciente recibido por detect()
         self._rescan_timer = None         # threading.Timer pendiente
@@ -401,10 +438,19 @@ class P6RoiDetector:
         prefijo = "Re-escaneo" if rescan else "Escaneo completo (Practica 6)"
         self._cancel = threading.Event()
 
+        # Instancia dedicada para el escaneo de fondo (evita condición de carrera en cv2.dnn_Net)
+        if self._scan_net is None:
+            try:
+                self._scan_net = load_ssd_net()
+            except Exception:
+                self._scan_net = self.net
+        net_scan = self._scan_net
+
         def job():
             try:
                 raw = []
-                for ev in p6_scan(img, self.net, 24, 1.40, batch=16, cancel=self._cancel):
+                for ev in p6_scan(img, net_scan, 24, 1.40, batch=16, cancel=self._cancel,
+                                  upsample_levels=self.upsample_levels):
                     if ev["phase"] == "scored":
                         self.status = (f"{prefijo}: "
                                        f"{ev['done']}/{ev['total']} ventanas")
@@ -476,6 +522,7 @@ class P6RoiDetector:
         if getattr(self, "_rescan_timer", None) is not None:
             self._rescan_timer.cancel()
             self._rescan_timer = None
+        self._scan_net = None
 
     def _search(self, frame, box, conf):
         """Desliza la ventana de 96×96 solo alrededor de ``box``; prueba 3 tamaños si no encuentra.
@@ -511,7 +558,8 @@ class P6RoiDetector:
                     metas.append((xx, yy))
             if not patches:
                 continue
-            scores, aligns = p6.puntuar_lote(self.net, patches, 0.60, 0.50)
+            with self._lock:
+                scores, aligns = p6.puntuar_lote(self.net, patches, 0.60, 0.50)
             ok = scores >= conf
             if not ok.any():
                 continue
@@ -522,7 +570,8 @@ class P6RoiDetector:
 
 
 def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
-            conf_thr=0.90, nms_thr=0.30, min_cover=0.60, context=0.50, contain=0.40):
+            conf_thr=0.90, nms_thr=0.30, min_cover=0.60, context=0.50, contain=0.40,
+            upsample_levels=0):
     """Versión generadora de ``run_practica6``: misma lógica pero narra cada paso.
 
     Relación con ``run_practica6``
@@ -548,6 +597,9 @@ def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
         min_cover (float): Alineación mínima caja-ventana para ``puntuar_lote``.
         context (float): Margen de contexto para ``puntuar_lote``.
         contain (float): Umbral de contención para ``non_max_suppression``.
+        upsample_levels (int): Niveles de ampliación de la pirámide (0 por defecto,
+            comportamiento clásico de solo reducción). Permite detectar rostros
+            menores que la ventana de 96x96 px.
 
     Yields:
         dict: Eventos de las fases "start", "scan", "scored", "nms", "done" y "cancelled".
@@ -555,7 +607,7 @@ def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
     import practica_6_deteccion_rostros as p6
     win = 96
     H0, W0 = frame.shape[:2]
-    levels = list(p6.image_pyramid(frame, scale, (win, win)))
+    levels = list(p6.image_pyramid(frame, scale, (win, win), upsample_levels))
     info = []
     for lvl, s, im in levels:
         h, w = im.shape[:2]
@@ -563,8 +615,10 @@ def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
                          n=len(range(0, h - win + 1, step)) * len(range(0, w - win + 1, step))))
     total = sum(i["n"] for i in info)
     t0 = time.perf_counter()
+    n_upsample = sum(1 for lvl, _, _ in levels if lvl < 0)
     yield dict(phase="start", levels=info, total=total, step=step, batch=batch,
-               level_imgs=[im for _, _, im in levels])
+               level_imgs=[im for _, _, im in levels],
+               upsample_levels=upsample_levels, n_upsample=n_upsample)
 
     raw_boxes, raw_scores, raw_rank, done = [], [], [], 0
     for li, (lvl, s, im) in enumerate(levels):
@@ -598,7 +652,7 @@ def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
     yield dict(phase="nms", raw=rb, kept=rb[keep], n_raw=len(rb), done=done, total=total,
                elapsed=time.perf_counter() - t0)
     yield dict(phase="done", boxes=rb[keep], scores=rs[keep], raw_boxes=rb, total=total,
-               elapsed=time.perf_counter() - t0)
+               elapsed=time.perf_counter() - t0, upsample_levels=upsample_levels)
 
 
 def render_p6(frame, st):
@@ -649,7 +703,9 @@ def render_p6(frame, st):
         if y0 + th < H - 96:
             out[y0:y0 + th, x0:x0 + tw] = thumb
             cv2.rectangle(out, (x0 - 1, y0 - 1), (x0 + tw, y0 + th), WHITE, 1)
-            cv2.putText(out, f"nivel {li + 1}/{len(imgs)} (imagen / {st['levels'][li]['s']:.2f})",
+            s_lvl = st["levels"][li]["s"]
+            factor_txt = f"imagen x {1.0 / s_lvl:.2f}" if s_lvl < 1.0 else f"imagen / {s_lvl:.2f}"
+            cv2.putText(out, f"nivel {li + 1}/{len(imgs)} ({factor_txt})",
                         (x0, y0 + th + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.42, WHITE, 1, cv2.LINE_AA)
 
     # texto de la fase actual
