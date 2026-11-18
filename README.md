@@ -12,7 +12,9 @@ Proyecto universitario de Visión por Computadora para la detección facial y cl
 - **Múltiples detectores faciales**:
   - **YuNet** (`models/face_detection_yunet_2023mar.onnx`): Detector ligero moderno en una sola pasada (tiempo real a altos FPS).
   - **SSD ResNet-10** (`models/`): Red neuronal profunda de detección facial en una pasada.
+  - **Haar Cascades** (Viola-Jones): Detector clásico integrado en OpenCV que emplea pirámide de imágenes y ventana deslizante con clasificadores en cascada e imágenes integrales.
   - **Práctica 6** (`practica_6_deteccion_rostros.py`): Análisis detallado usando pirámide multiescala + ventana deslizante + NMS, con soporte de sobremuestreo (`upsample_levels`) para detectar rostros pequeños que miden menos que la ventana base (Desafío 2b).
+  - **Práctica 6 ROI** (experimental): Ventana deslizante acotada a la región de interés alrededor del rostro rastreado por el tracker.
 - **Múltiples clasificadores de sonrisa**:
   - **Modelo A (CNN desde cero)**: `model_A_cnn.keras` (ligero y rápido, ~25 ms/cara).
   - **Modelo B (MobileNetV2 Transfer Learning)**: `model_B_mobilenetv2.keras`.
