@@ -6,12 +6,13 @@ Proyecto universitario de Visión por Computadora para la detección facial y cl
 
 ## Características principales
 
-- **Interfaz Gráfica interactiva (`app_gui.py`)**: Construida con Tkinter (multi-hilo para no ralentizar el video). Permite alternar detectores y modelos en caliente, ajustar márgenes, umbrales y suavizado en vivo, ver los recortes 64×64 preprocesados y medir métricas de rendimiento (FPS de procesamiento e interfaz, tiempos de detección, clasificación y dibujo).
+- **Interfaz Gráfica interactiva (`app_gui.py`)**: Construida con **CustomTkinter** v2 (multi-hilo para no ralentizar el video). Permite alternar detectores y modelos en caliente, cambiar temas (claro/oscuro/sistema con persistencia), activar modo rendimiento, ajustar márgenes, umbrales y suavizado en vivo, ver recortes 64×64 y monitorear métricas con sparklines de rendimiento en tiempo real.
 - **Inferencia en tiempo real por OpenCV (`app_sonrisa.py`)**: Versión ligera y directa para ejecutar desde consola.
+- **Modo solo-detección**: Si no se dispone de un modelo `.keras`, tanto la GUI como la consola operan en modo solo-detección (rostros encuadrados en blanco sin clasificar).
 - **Múltiples detectores faciales**:
-  - **YuNet** (`face_detection_yunet_2023mar.onnx`): Detector ligero moderno en una sola pasada (tiempo real a altos FPS).
-  - **SSD ResNet-10** (`modelo/`): Red neuronal profunda de detección facial en una pasada.
-  - **Práctica 6** (`practica_6_deteccion_rostros.py`): Análisis detallado usando pirámide de escalas + ventana deslizante + NMS, permitiendo comparar visualmente su tiempo frente a detectores en una pasada.
+  - **YuNet** (`models/face_detection_yunet_2023mar.onnx`): Detector ligero moderno en una sola pasada (tiempo real a altos FPS).
+  - **SSD ResNet-10** (`models/`): Red neuronal profunda de detección facial en una pasada.
+  - **Práctica 6** (`practica_6_deteccion_rostros.py`): Análisis detallado usando pirámide multiescala + ventana deslizante + NMS, con soporte de sobremuestreo (`upsample_levels`) para detectar rostros pequeños que miden menos que la ventana base (Desafío 2b).
 - **Múltiples clasificadores de sonrisa**:
   - **Modelo A (CNN desde cero)**: `model_A_cnn.keras` (ligero y rápido, ~25 ms/cara).
   - **Modelo B (MobileNetV2 Transfer Learning)**: `model_B_mobilenetv2.keras`.
@@ -52,7 +53,7 @@ Cámara / Video
 │   ├── 02_modelo_B_mobilenetv2_transfer_learning.ipynb
 │   ├── 03_practica_6_deteccion_rostros_ventana_deslizante.ipynb
 │   └── 04_gradcam_y_errores_modelo_A.ipynb
-├── resultados/                     # Resultados de experimentos (imágenes, gráficos)
+├── resultados/                     # Resultados de experimentos (análisis de errores Grad-CAM y benchmark P6)
 ├── requirements.txt                # Dependencias del proyecto (incluye customtkinter)
 └── README.md                       # Documentación
 ```
@@ -85,7 +86,7 @@ pip install -r requirements.txt
 python app_gui.py
 
 # Usando un archivo de video con tema claro
-python app_gui.py --source video.mp4 --theme light
+python app_gui.py --source ruta/al/video.mp4 --theme light
 
 # Modo máximo rendimiento (sin animaciones)
 python app_gui.py --no-anim
@@ -103,7 +104,7 @@ python app_gui.py --theme dark
   - *Margen del recorte*: Ajusta cuánto contexto extra alrededor del rostro recibe el modelo (se recuerda de forma independiente por detector).
   - *Umbral de sonrisa*: Probabilidad de corte para catalogar `Sonríe` vs `No sonríe`.
   - *Suavizado*: Ventana de fotogramas para promediar la predicción en cada rostro.
-- **Botón "Analizar fotograma con la Práctica 6"**: Congela el fotograma y corre la pirámide multiescala con ventana deslizante, mostrando la comparativa de velocidad frente al detector en vivo.
+- **Botón "Analizar fotograma con la Práctica 6"**: Congela el fotograma y corre la pirámide multiescala con ventana deslizante (con presets configurables y soporte de sobremuestreo para rostros pequeños), mostrando la comparativa de velocidad frente al detector en vivo.
 - **Atajos de teclado:**
 
 | Tecla | Acción |
