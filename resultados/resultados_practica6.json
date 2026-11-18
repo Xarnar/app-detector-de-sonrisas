@@ -1,0 +1,465 @@
+{
+  "practica": "Práctica 6 · Detección de rostros (ventana deslizante + pirámide de imágenes)",
+  "entorno": {
+    "opencv": "4.14.0",
+    "numpy": "2.1.3",
+    "pandas": "2.3.3"
+  },
+  "modelo": {
+    "arquitectura": "ResNet-10 SSD (Caffe)",
+    "prototxt": "deploy.prototxt",
+    "pesos": "res10_300x300_ssd_iter_140000.caffemodel",
+    "entrada_red": [
+      300,
+      300
+    ]
+  },
+  "parametros_globales": {
+    "window_size": [
+      96,
+      96
+    ],
+    "conf_threshold": 0.9,
+    "nms_overlap": 0.3,
+    "batch_size": 32,
+    "min_alineacion": 0.6,
+    "context_margin": 0.5,
+    "contain_thresh": 0.4
+  },
+  "benchmark_caso1": [
+    {
+      "Configuración": "Paso Fino",
+      "Step Size": 8,
+      "Scale Factor": 1.15,
+      "Niveles de Pirámide": 13,
+      "Total Ventanas Evaluadas": 8676,
+      "Detecciones Brutas": 78,
+      "Detecciones Finales (NMS)": 1,
+      "Tiempo Total (s)": 240.3,
+      "Confianza máx.": 1.0,
+      "Ventanas/s": 36.1,
+      "ventanas_por_nivel": [
+        2809,
+        1936,
+        1369,
+        961,
+        625,
+        400,
+        256,
+        169,
+        81,
+        49,
+        16,
+        4,
+        1
+      ]
+    },
+    {
+      "Configuración": "Paso Estándar",
+      "Step Size": 16,
+      "Scale Factor": 1.25,
+      "Niveles de Pirámide": 8,
+      "Total Ventanas Evaluadas": 1574,
+      "Detecciones Brutas": 15,
+      "Detecciones Finales (NMS)": 1,
+      "Tiempo Total (s)": 44.04,
+      "Confianza máx.": 1.0,
+      "Ventanas/s": 35.7,
+      "ventanas_por_nivel": [
+        729,
+        400,
+        225,
+        121,
+        64,
+        25,
+        9,
+        1
+      ]
+    },
+    {
+      "Configuración": "Paso Rápido",
+      "Step Size": 24,
+      "Scale Factor": 1.4,
+      "Niveles de Pirámide": 5,
+      "Total Ventanas Evaluadas": 537,
+      "Detecciones Brutas": 4,
+      "Detecciones Finales (NMS)": 1,
+      "Tiempo Total (s)": 14.53,
+      "Confianza máx.": 0.9993,
+      "Ventanas/s": 37.0,
+      "ventanas_por_nivel": [
+        324,
+        144,
+        49,
+        16,
+        4
+      ]
+    }
+  ],
+  "casos_configuracion_estandar": {
+    "Caso 1 · Escena compleja (rostro mediano)": {
+      "niveles": 8,
+      "total_ventanas": 1574,
+      "ventanas_por_nivel": [
+        729,
+        400,
+        225,
+        121,
+        64,
+        25,
+        9,
+        1
+      ],
+      "detecciones_brutas": 15,
+      "detecciones_finales": 1,
+      "tiempo_s": 44.044,
+      "cajas_finales_xyxy": [
+        [
+          176,
+          80,
+          272,
+          176
+        ]
+      ],
+      "confianzas_finales": [
+        0.99999
+      ],
+      "imagen_px": [
+        512,
+        512
+      ]
+    },
+    "Caso 2 · Rostro dominante (primer plano)": {
+      "niveles": 8,
+      "total_ventanas": 1516,
+      "ventanas_por_nivel": [
+        700,
+        399,
+        224,
+        110,
+        56,
+        20,
+        6,
+        1
+      ],
+      "detecciones_brutas": 38,
+      "detecciones_finales": 1,
+      "tiempo_s": 42.756,
+      "cajas_finales_xyxy": [
+        [
+          156,
+          156,
+          344,
+          344
+        ]
+      ],
+      "confianzas_finales": [
+        0.99991
+      ],
+      "imagen_px": [
+        484,
+        528
+      ]
+    },
+    "Caso 3 · Control negativo (sin rostros)": {
+      "niveles": 7,
+      "total_ventanas": 1397,
+      "ventanas_por_nivel": [
+        640,
+        375,
+        209,
+        98,
+        50,
+        21,
+        4
+      ],
+      "detecciones_brutas": 0,
+      "detecciones_finales": 0,
+      "tiempo_s": 35.075,
+      "cajas_finales_xyxy": [],
+      "confianzas_finales": [],
+      "imagen_px": [
+        600,
+        400
+      ]
+    }
+  },
+  "ablacion_caso3": [
+    {
+      "Contexto (× lado)": 0.0,
+      "Alineación mín.": 0.0,
+      "Ventanas aceptadas": 3,
+      "Detecciones finales": 1,
+      "Confianza máx. FP": 0.924,
+      "Tiempo (s)": 39.8
+    },
+    {
+      "Contexto (× lado)": 0.0,
+      "Alineación mín.": 0.6,
+      "Ventanas aceptadas": 0,
+      "Detecciones finales": 0,
+      "Confianza máx. FP": 0.0,
+      "Tiempo (s)": 40.2
+    },
+    {
+      "Contexto (× lado)": 0.5,
+      "Alineación mín.": 0.0,
+      "Ventanas aceptadas": 0,
+      "Detecciones finales": 0,
+      "Confianza máx. FP": 0.0,
+      "Tiempo (s)": 40.2
+    },
+    {
+      "Contexto (× lado)": 0.5,
+      "Alineación mín.": 0.6,
+      "Ventanas aceptadas": 0,
+      "Detecciones finales": 0,
+      "Confianza máx. FP": 0.0,
+      "Tiempo (s)": 39.8
+    }
+  ],
+  "ablacion_tamano_ventana": {
+    "parametros": {
+      "ventanas_px": [
+        64,
+        96,
+        128
+      ],
+      "paso": "25 % de la ventana",
+      "scale": 1.4,
+      "conf_threshold": 0.9,
+      "nms_overlap": 0.3,
+      "min_alineacion": 0.6,
+      "context_margin": 0.5,
+      "contain_thresh": 0.4,
+      "batch_size": 32
+    },
+    "resultados": [
+      {
+        "caso": "Caso 1 · Escena compleja (rostro mediano)",
+        "ventana_px": 64,
+        "paso_px": 16,
+        "niveles": 7,
+        "ventanas_por_nivel": [
+          841,
+          361,
+          169,
+          64,
+          25,
+          4,
+          1
+        ],
+        "ventanas_evaluadas": 1465,
+        "detecciones_brutas": 16,
+        "detecciones_finales": 2,
+        "cajas_finales_xyxy": [
+          [
+            192,
+            112,
+            256,
+            176
+          ],
+          [
+            345,
+            188,
+            470,
+            314
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            64,
+            64
+          ],
+          [
+            125,
+            126
+          ]
+        ],
+        "confianzas_finales": [
+          0.99221,
+          0.90993
+        ],
+        "tiempo_s": 42.642,
+        "ventanas_por_s": 34.4
+      },
+      {
+        "caso": "Caso 1 · Escena compleja (rostro mediano)",
+        "ventana_px": 96,
+        "paso_px": 24,
+        "niveles": 5,
+        "ventanas_por_nivel": [
+          324,
+          144,
+          49,
+          16,
+          4
+        ],
+        "ventanas_evaluadas": 537,
+        "detecciones_brutas": 4,
+        "detecciones_finales": 1,
+        "cajas_finales_xyxy": [
+          [
+            168,
+            72,
+            264,
+            168
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            96,
+            96
+          ]
+        ],
+        "confianzas_finales": [
+          0.9993
+        ],
+        "tiempo_s": 15.378,
+        "ventanas_por_s": 34.9
+      },
+      {
+        "caso": "Caso 1 · Escena compleja (rostro mediano)",
+        "ventana_px": 128,
+        "paso_px": 32,
+        "niveles": 5,
+        "ventanas_por_nivel": [
+          169,
+          64,
+          25,
+          4,
+          1
+        ],
+        "ventanas_evaluadas": 263,
+        "detecciones_brutas": 1,
+        "detecciones_finales": 1,
+        "cajas_finales_xyxy": [
+          [
+            160,
+            64,
+            288,
+            192
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            128,
+            128
+          ]
+        ],
+        "confianzas_finales": [
+          0.99999
+        ],
+        "tiempo_s": 7.466,
+        "ventanas_por_s": 35.2
+      },
+      {
+        "caso": "Caso 2 · Rostro dominante (primer plano)",
+        "ventana_px": 64,
+        "paso_px": 16,
+        "niveles": 7,
+        "ventanas_por_nivel": [
+          810,
+          360,
+          156,
+          72,
+          20,
+          6,
+          1
+        ],
+        "ventanas_evaluadas": 1425,
+        "detecciones_brutas": 11,
+        "detecciones_finales": 1,
+        "cajas_finales_xyxy": [
+          [
+            132,
+            176,
+            307,
+            351
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            175,
+            175
+          ]
+        ],
+        "confianzas_finales": [
+          0.99981
+        ],
+        "tiempo_s": 40.528,
+        "ventanas_por_s": 35.2
+      },
+      {
+        "caso": "Caso 2 · Rostro dominante (primer plano)",
+        "ventana_px": 96,
+        "paso_px": 24,
+        "niveles": 5,
+        "ventanas_por_nivel": [
+          323,
+          132,
+          56,
+          20,
+          4
+        ],
+        "ventanas_evaluadas": 535,
+        "detecciones_brutas": 14,
+        "detecciones_finales": 1,
+        "cajas_finales_xyxy": [
+          [
+            141,
+            141,
+            329,
+            329
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            188,
+            188
+          ]
+        ],
+        "confianzas_finales": [
+          0.99986
+        ],
+        "tiempo_s": 15.273,
+        "ventanas_por_s": 35.0
+      },
+      {
+        "caso": "Caso 2 · Rostro dominante (primer plano)",
+        "ventana_px": 128,
+        "paso_px": 32,
+        "niveles": 4,
+        "ventanas_por_nivel": [
+          156,
+          56,
+          20,
+          6
+        ],
+        "ventanas_evaluadas": 238,
+        "detecciones_brutas": 14,
+        "detecciones_finales": 1,
+        "cajas_finales_xyxy": [
+          [
+            134,
+            179,
+            314,
+            358
+          ]
+        ],
+        "tamano_cajas_finales_px": [
+          [
+            180,
+            179
+          ]
+        ],
+        "confianzas_finales": [
+          0.9998
+        ],
+        "tiempo_s": 6.737,
+        "ventanas_por_s": 35.3
+      }
+    ],
+    "conclusion": "Con paso = 25 % de la ventana, escala 1.40, confianza 0.90 y NMS 0.30, las detecciones finales (tamaño de la caja en la imagen original) fueron: Caso 1: 64 px → 2 final(es) [64×64; 125×126], 96 px → 1 final(es) [96×96], 128 px → 1 final(es) [128×128]; Caso 2: 64 px → 1 final(es) [175×175], 96 px → 1 final(es) [188×188], 128 px → 1 final(es) [180×179]; el costo fue Caso 1: 1465 ventanas / 42.6 s con 64 px frente a 263 / 7.5 s con 128 px; Caso 2: 1425 ventanas / 40.5 s con 64 px frente a 238 / 6.7 s con 128 px."
+  }
+}

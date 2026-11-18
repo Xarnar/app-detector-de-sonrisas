@@ -1,9 +1,36 @@
 """
-Núcleo del detector de sonrisas (sin interfaz).
-Detectores de rostros, clasificador de sonrisa, recorte, seguimiento y dibujo.
-Lo usa la interfaz gráfica (app_gui.py).
+Núcleo del detector de sonrisas (sin interfaz gráfica).
+========================================================
 
-Contrato del clasificador: gris, 64x64, float32 0-255, forma (N,64,64,1).
+Propósito del módulo
+--------------------
+Proporciona todos los componentes reutilizables del sistema de detección de
+sonrisas: detectores de rostros, clasificador de sonrisa, recorte y
+preprocesado de caras, seguimiento entre frames y dibujo de anotaciones.
+Es el módulo central que usa la interfaz gráfica (app_gui.py).
+
+Contrato del clasificador
+--------------------------
+Entrada al modelo: imagen en escala de grises, 64×64 px, float32 valores
+0–255, con forma (N, 64, 64, 1).  El reescalado a [0, 1] se hace dentro del
+modelo (capa Rescaling).
+
+Dependencias
+------------
+    numpy, opencv-python (serie 4.x), tensorflow (>=2.x)
+
+Cómo ejecutarlo
+---------------
+    Este módulo no tiene punto de entrada propio.
+    Importarlo desde app_gui.py o app_sonrisa.py.
+
+Archivos que necesita
+---------------------
+    models/face_detection_yunet_2023mar.onnx  – detector YuNet (se descarga si falta)
+    models/deploy.prototxt                    – arquitectura SSD (se descarga si falta)
+    models/res10_300x300_ssd_iter_140000.caffemodel – pesos SSD (se descarga si falta)
+    models/model_*.keras                      – clasificador de sonrisa (opcional)
+    models/*_metrics.json                     – umbral recomendado por modelo (opcional)
 """
 import glob
 import json
@@ -17,10 +44,23 @@ from collections import deque
 import cv2
 import numpy as np
 
+# Tamaño de entrada del clasificador (debe coincidir con el entrenamiento)
 IMG_SIZE = 64
 
 def find_file(filename, search_dirs=("models", "modelo", ".")):
-    """Busca un archivo en las carpetas comunes y devuelve su ruta si existe."""
+    """Busca un archivo en las carpetas comunes y devuelve su ruta si existe.
+
+    Primero comprueba rutas absolutas y relativas directas; después busca en
+    cada directorio de ``search_dirs``.  Si no lo encuentra, devuelve la ruta
+    canónica dentro de 'models' para que el llamador pueda descargarlo allí.
+
+    Args:
+        filename (str): Nombre o ruta del archivo a buscar.
+        search_dirs (tuple[str, ...]): Carpetas donde buscar, en orden.
+
+    Returns:
+        str: Ruta al archivo encontrado, o ruta sugerida si no existe.
+    """
     if os.path.isabs(filename) and os.path.exists(filename):
         return filename
     if os.path.exists(filename):
@@ -56,7 +96,19 @@ GREEN, RED, WHITE = (60, 200, 60), (50, 50, 230), (255, 255, 255)
 
 # ------------------------------------------------------------------ descargas
 def _download(url, path, min_bytes):
-    """Descarga `path` si no existe o es demasiado pequeño (p. ej. un puntero Git LFS)."""
+    """Descarga ``path`` si no existe o es demasiado pequeño (p.ej. un puntero Git LFS).
+
+    Args:
+        url (str): URL de descarga del archivo.
+        path (str): Ruta local donde guardar el archivo.
+        min_bytes (int): Tamaño mínimo en bytes que debe tener el archivo descargado.
+
+    Returns:
+        str: Ruta local del archivo (mismo que ``path``).
+
+    Raises:
+        RuntimeError: Si la descarga falla o el archivo sigue siendo demasiado pequeño.
+    """
     if os.path.exists(path) and os.path.getsize(path) >= min_bytes:
         return path
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -73,16 +125,34 @@ def _download(url, path, min_bytes):
 
 # ------------------------------------------------------------------ detectores
 class YuNetDetector:
+    """Detector de rostros YuNet (ONNX): rápido, una sola pasada sobre el frame.
+
+    Descarga automáticamente el modelo si no existe en disco.
+    """
     name = "yunet"
 
     def __init__(self, path=None):
+        """Inicializa el detector descargando el modelo si es necesario.
+
+        Args:
+            path (str | None): Ruta al archivo .onnx.  Si None, se busca
+                en las carpetas estándar y se descarga si falta.
+        """
         if path is None:
             path = find_file(YUNET_FILE)
         _download(YUNET_URL, path, 100_000)
         self.det = cv2.FaceDetectorYN.create(path, "", (320, 320), 0.7, 0.3, 10)
 
     def detect(self, frame, score=0.7):
-        """Devuelve cajas (x, y, w, h) enteras."""
+        """Detecta rostros en el frame y devuelve cajas (x, y, w, h) enteras.
+
+        Args:
+            frame (np.ndarray): Frame BGR de entrada.
+            score (float): Confianza mínima para aceptar una detección.
+
+        Returns:
+            list[tuple[int, int, int, int]]: Lista de cajas (x, y, w, h).
+        """
         h, w = frame.shape[:2]
         self.det.setInputSize((w, h))
         self.det.setScoreThreshold(float(score))
@@ -93,6 +163,17 @@ class YuNetDetector:
 
 
 def load_ssd_net(folder=None):
+    """Carga la red ResNet-10 SSD (Práctica 6) verificando compatibilidad con OpenCV 4.x.
+
+    Args:
+        folder (str | None): Carpeta del modelo.  Si None, usa ``SSD_DIR``.
+
+    Returns:
+        cv2.dnn_Net: Red lista para inferencia.
+
+    Raises:
+        RuntimeError: Si OpenCV no incluye el importador Caffe (serie 5.x).
+    """
     if not hasattr(cv2.dnn, "readNetFromCaffe"):
         raise RuntimeError(f"OpenCV {cv2.__version__} no incluye el importador Caffe "
                            "(serie 5.x). Instala: pip install \"opencv-python<5\"")
@@ -106,13 +187,31 @@ def load_ssd_net(folder=None):
 
 
 class SSDDetector:
-    """La red de la Práctica 6 aplicada al frame completo en UNA sola pasada (tiempo real)."""
+    """La red de la Práctica 6 aplicada al frame completo en UNA sola pasada (tiempo real).
+
+    A diferencia de ``run_practica6`` / ``p6_scan``, no usa pirámide ni ventana
+    deslizante: redimensiona el frame completo a 300×300 y hace un único forward.
+    """
     name = "ssd"
 
     def __init__(self, net):
+        """Inicializa con una red SSD ya cargada.
+
+        Args:
+            net (cv2.dnn_Net): Red SSD cargada con ``load_ssd_net()``.
+        """
         self.net = net
 
     def detect(self, frame, score=0.6):
+        """Detecta rostros en el frame completo con la red SSD.
+
+        Args:
+            frame (np.ndarray): Frame BGR de entrada.
+            score (float): Confianza mínima para aceptar una detección.
+
+        Returns:
+            list[tuple[int, int, int, int]]: Lista de cajas (x, y, w, h).
+        """
         H, W = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300),
                                      (104.0, 177.0, 123.0))
@@ -130,7 +229,26 @@ class SSDDetector:
 
 
 def run_practica6(frame, net, step=24, scale=1.40):
-    """Algoritmo de la Práctica 6 (pirámide + ventana deslizante). Lento: ~segundos por frame."""
+    """Ejecuta el algoritmo de la Práctica 6 (pirámide + ventana deslizante) sobre un frame.
+
+    Relación con ``p6_scan``: esta función devuelve el resultado final de una sola vez,
+    sin narrar el proceso paso a paso.  ``p6_scan`` es su versión generadora que permite
+    animar el escaneo en la GUI.  Ambas producen los mismos resultados.
+
+    Lento: ~segundos por frame, no apto para tiempo real.
+
+    Args:
+        frame (np.ndarray): Frame BGR a analizar.
+        net (cv2.dnn_Net): Red SSD cargada con ``load_ssd_net()``.
+        step (int): Paso de la ventana deslizante en píxeles.
+        scale (float): Factor de reducción de la pirámide.
+
+    Returns:
+        tuple[list[tuple], int, float]:
+            - boxes: Lista de cajas (x, y, w, h) en coordenadas originales.
+            - total_ventanas: Número total de ventanas evaluadas.
+            - secs: Tiempo de ejecución en segundos.
+    """
     import practica_6_deteccion_rostros as p6
     t0 = time.perf_counter()
     r = p6.detect_faces(frame, net, (96, 96), step, scale, 0.90, 0.30, 32, 0.60, 0.50, 0.40)
@@ -142,10 +260,18 @@ def run_practica6(frame, net, step=24, scale=1.40):
 
 class HaarDetector:
     """Clásico de Viola-Jones: pirámide + ventana deslizante + cascada de clasificadores livianos.
-    OpenCV lo hace por dentro (detectMultiScale); por eso corre en tiempo real."""
+
+    OpenCV realiza el proceso interno con ``detectMultiScale``; por eso corre en tiempo real
+    aunque usa el mismo concepto de pirámide y ventana deslizante que la Práctica 6.
+    """
     name = "haar"
 
     def __init__(self):
+        """Carga la cascada de Haar desde la instalación de OpenCV.
+
+        Raises:
+            RuntimeError: Si no se encuentra el archivo XML de la cascada.
+        """
         folder = getattr(getattr(cv2, "data", None), "haarcascades", None) \
             or os.path.join(os.path.dirname(cv2.__file__), "data")
         path = os.path.join(folder, "haarcascade_frontalface_default.xml")
@@ -154,6 +280,20 @@ class HaarDetector:
             raise RuntimeError(f"No se encontró la cascada de Haar en {path}")
 
     def detect(self, frame, score=0.6):
+        """Detecta rostros con la cascada de Haar.
+
+        Reduce la imagen a 320 px de ancho para acelerar el proceso, luego
+        reescala las cajas al tamaño original.  El parámetro ``score`` (0.3–0.95)
+        se traduce a ``minNeighbors`` de ``detectMultiScale``.
+
+        Args:
+            frame (np.ndarray): Frame BGR de entrada.
+            score (float): "Confianza" normalizada: mayor = más restrictivo.
+                Se convierte a minNeighbors en rango [3, 10].
+
+        Returns:
+            list[tuple[int, int, int, int]]: Lista de cajas (x, y, w, h).
+        """
         H, W = frame.shape[:2]
         f = 320.0 / W if W > 320 else 1.0                  # se analiza una versión reducida: más rápido
         small = cv2.resize(frame, (int(W * f), int(H * f))) if f < 1 else frame
@@ -165,23 +305,77 @@ class HaarDetector:
 
 
 class P6RoiDetector:
-    """Algoritmo de la Práctica 6 adaptado a tiempo real (EXPERIMENTAL).
-    1) Escaneo completo (pirámide + ventana deslizante) en segundo plano, una sola vez.
-    2) Luego, en cada frame, solo desliza la ventana cerca de donde estaba la cara (2x2 posiciones).
-    Cada ventana cuesta una pasada completa de la red, por eso son pocos FPS."""
+    """Algoritmo de la Práctica 6 adaptado a tiempo real mediante detección/seguimiento separados.
+
+    Separación detección / seguimiento
+    ------------------------------------
+    1) DETECCIÓN: Escaneo completo (pirámide + ventana deslizante sobre toda la imagen)
+       en un hilo en segundo plano, una sola vez.  Mientras corre, el video sigue en vivo.
+    2) SEGUIMIENTO: Una vez detectados los rostros, en cada frame solo desliza la ventana
+       96×96 alrededor de las últimas posiciones conocidas (2×2 posiciones en ROI reducida),
+       lo que es órdenes de magnitud más rápido que el escaneo completo.
+
+    Cada ventana de seguimiento sigue requiriendo una pasada completa de la red SSD, por
+    eso los FPS siguen siendo bajos (modo experimental).
+    """
     name = "p6roi"
-    MAX_TRACKED = 3
+    MAX_TRACKED = 3   # máximo de caras que se rastrean simultáneamente
+
+    # Intervalo entre re-escaneos periódicos en segundo plano (segundos).
+    # Permite descubrir caras nuevas que entraron al encuadre después del escaneo inicial.
+    rescan_interval = 10.0
 
     def __init__(self, net, step=32):
+        """Inicializa el detector con la red SSD.
+
+        Args:
+            net (cv2.dnn_Net): Red SSD cargada con ``load_ssd_net()``.
+            step (int): Paso de la ventana durante el seguimiento.
+        """
         self.net, self.step = net, step
         self.boxes = []
         self.status = ""
         self._thread, self._done, self._found = None, False, []
+        # Estado para el re-escaneo periódico en segundo plano
+        self._last_frame  = None          # frame más reciente recibido por detect()
+        self._rescan_timer = None         # threading.Timer pendiente
+        self._is_rescan   = False         # True cuando _done viene de un re-escaneo
 
     def detect(self, frame, score=0.9):
-        if self._done:                                    # llegó el resultado del escaneo completo
-            self.boxes, self._found = self._found[: self.MAX_TRACKED], []
+        """Detecta o rastrea rostros en el frame.
+
+        En la primera llamada (sin caras conocidas) lanza el escaneo completo en
+        un hilo de fondo y devuelve lista vacía.  En llamadas sucesivas, usa el
+        modo seguimiento alrededor de las últimas cajas.
+
+        El re-escaneo periódico (cada ``rescan_interval`` segundos) actualiza la
+        lista de cajas fusionando las nuevas con las existentes, sin desplazar las
+        que ya se están siguiendo.
+
+        Args:
+            frame (np.ndarray): Frame BGR actual.
+            score (float): Umbral de confianza para aceptar una ventana.
+
+        Returns:
+            list[tuple[int, int, int, int]]: Lista de cajas (x, y, w, h).
+        """
+        # Guardar el frame más reciente para el re-escaneo periódico
+        self._last_frame = frame
+
+        if self._done:
+            if self._is_rescan:
+                # Re-escaneo: fusionar caras nuevas con las existentes
+                self.boxes = self._merge_boxes(self.boxes, self._found)
+                self._is_rescan = False
+            else:
+                # Escaneo inicial: reemplazar cajas
+                self.boxes = self._found[: self.MAX_TRACKED]
+                # Programar el primer re-escaneo periódico
+                if self.boxes:
+                    self._schedule_rescan()
+            self._found = []
             self._done, self._thread = False, None
+
         if not self.boxes:
             if self._thread is None:
                 self.status = "Escaneo completo (Practica 6): iniciando..."
@@ -192,10 +386,19 @@ class P6RoiDetector:
         self.status = "" if new else "Rostro perdido: reescaneando..."
         return list(new)
 
-    def _start_scan(self, frame):
-        """Escaneo completo de la Práctica 6 (imagen completa, paso 24, escala 1.40) en un hilo aparte.
-        Mientras corre, el video sigue en vivo y el estado muestra el avance."""
+    def _start_scan(self, frame, rescan=False):
+        """Escaneo completo (pirámide + ventana deslizante, paso 24, escala 1.40) en un hilo aparte.
+
+        Mientras corre, el video se sigue mostrando a la velocidad de la cámara;
+        el estado (``self.status``) informa el progreso.
+
+        Args:
+            frame (np.ndarray): Frame que se analizará en segundo plano.
+            rescan (bool): True para re-escaneo periódico (fusiona resultados);
+                           False para escaneo inicial (reemplaza resultados).
+        """
         img = frame.copy()
+        prefijo = "Re-escaneo" if rescan else "Escaneo completo (Practica 6)"
         self._cancel = threading.Event()
 
         def job():
@@ -203,28 +406,88 @@ class P6RoiDetector:
                 raw = []
                 for ev in p6_scan(img, self.net, 24, 1.40, batch=16, cancel=self._cancel):
                     if ev["phase"] == "scored":
-                        self.status = (f"Escaneo completo (Practica 6): "
+                        self.status = (f"{prefijo}: "
                                        f"{ev['done']}/{ev['total']} ventanas")
                     elif ev["phase"] == "done":
                         raw = ev["boxes"]
                     elif ev["phase"] == "cancelled":
                         return
-                self._found = [(int(x1), int(y1), int(x2 - x1), int(y2 - y1)) for x1, y1, x2, y2 in raw]
+                self._found = [(int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+                               for x1, y1, x2, y2 in raw]
             except Exception as e:                        # noqa: BLE001
                 print("[p6roi]", e)
                 self._found = []
+            self._is_rescan = rescan
             self._done = True
+            # Programar el siguiente re-escaneo tras finalizar éste
+            if rescan:
+                self._schedule_rescan()
 
         self._thread = threading.Thread(target=job, daemon=True)
         self._thread.start()
 
+    def _merge_boxes(self, existing, new_boxes, iou_thr=0.30):
+        """Fusiona cajas nuevas del re-escaneo con las existentes.
+
+        Solo añade cajas cuyo IoU con todas las existentes sea menor que
+        ``iou_thr`` (caras genuinamente nuevas).  Respeta ``MAX_TRACKED``.
+
+        Args:
+            existing (list): Cajas actuales (x, y, w, h).
+            new_boxes (list): Cajas encontradas en el re-escaneo.
+            iou_thr (float): Umbral de IoU para considerar una caja como duplicada.
+
+        Returns:
+            list: Lista fusionada, con un máximo de ``MAX_TRACKED`` cajas.
+        """
+        merged = list(existing)
+        for nb in new_boxes:
+            if len(merged) >= self.MAX_TRACKED:
+                break
+            # Solo añadir si no se solapa significativamente con ninguna existente
+            if all(iou(nb, eb) < iou_thr for eb in merged):
+                merged.append(nb)
+        return merged
+
+    def _schedule_rescan(self):
+        """Programa un re-escaneo completo en segundo plano tras ``rescan_interval`` segundos.
+
+        Si ya había un timer pendiente, lo cancela primero.  El callback solo
+        lanza el hilo si no hay otro escaneo en curso y existe un frame reciente.
+        """
+        # Cancelar el timer anterior si aún no ha disparado
+        if self._rescan_timer is not None:
+            self._rescan_timer.cancel()
+
+        def _rescan_callback():
+            # Solo lanzar si no hay hilo activo y tenemos un frame reciente
+            if self._thread is None and self._last_frame is not None:
+                self.status = "Re-escaneo: buscando caras nuevas..."
+                self._start_scan(self._last_frame, rescan=True)
+
+        self._rescan_timer = threading.Timer(self.rescan_interval, _rescan_callback)
+        self._rescan_timer.daemon = True
+        self._rescan_timer.start()
+
     def close(self):
-        """Detiene el escaneo en segundo plano (al cambiar de detector)."""
+        """Detiene el escaneo y el timer de re-escaneo en segundo plano (al cambiar de detector)."""
         if getattr(self, "_cancel", None) is not None:
             self._cancel.set()
+        if getattr(self, "_rescan_timer", None) is not None:
+            self._rescan_timer.cancel()
+            self._rescan_timer = None
 
     def _search(self, frame, box, conf):
-        """Desliza la ventana de 96x96 solo alrededor de `box`; prueba 3 tamaños si no encuentra."""
+        """Desliza la ventana de 96×96 solo alrededor de ``box``; prueba 3 tamaños si no encuentra.
+
+        Args:
+            frame (np.ndarray): Frame BGR actual.
+            box (tuple[int, int, int, int]): Caja conocida (x, y, w, h).
+            conf (float): Umbral de confianza mínimo.
+
+        Returns:
+            tuple[int, int, int, int] | None: Nueva caja (x, y, w, h) o None si se perdió.
+        """
         import practica_6_deteccion_rostros as p6
         H, W = frame.shape[:2]
         x, y, w, h = box
@@ -260,9 +523,35 @@ class P6RoiDetector:
 
 def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
             conf_thr=0.90, nms_thr=0.30, min_cover=0.60, context=0.50, contain=0.40):
-    """Misma lógica que p6.detect_faces (mismos resultados), pero como GENERADOR que narra cada paso
-    para poder dibujarlo. Usa las funciones de la práctica: image_pyramid, sliding_window,
-    puntuar_lote y non_max_suppression. Lotes pequeños => animación más fluida."""
+    """Versión generadora de ``run_practica6``: misma lógica pero narra cada paso.
+
+    Relación con ``run_practica6``
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``p6_scan`` produce exactamente los mismos resultados que ``p6.detect_faces``
+    (y por tanto que ``run_practica6``), pero en lugar de retornar el resultado
+    final de golpe, va cediendo eventos intermedios para que la GUI pueda animar
+    el proceso en tiempo real.  Lotes pequeños => animación más fluida.
+
+    Usa las mismas funciones de la práctica: ``image_pyramid``, ``sliding_window``,
+    ``puntuar_lote`` y ``non_max_suppression``.
+
+    Args:
+        frame (np.ndarray): Frame BGR a analizar.
+        net (cv2.dnn_Net): Red SSD cargada.
+        step (int): Paso de la ventana deslizante.
+        scale (float): Factor de la pirámide.
+        batch (int): Tamaño del lote (lotes pequeños => animación más fluida).
+        cancel (threading.Event | None): Si se activa, el generador termina
+            devolviendo ``{"phase": "cancelled"}``.
+        conf_thr (float): Umbral de confianza para aceptar ventanas.
+        nms_thr (float): Umbral de IoU del NMS.
+        min_cover (float): Alineación mínima caja-ventana para ``puntuar_lote``.
+        context (float): Margen de contexto para ``puntuar_lote``.
+        contain (float): Umbral de contención para ``non_max_suppression``.
+
+    Yields:
+        dict: Eventos de las fases "start", "scan", "scored", "nms", "done" y "cancelled".
+    """
     import practica_6_deteccion_rostros as p6
     win = 96
     H0, W0 = frame.shape[:2]
@@ -314,7 +603,16 @@ def p6_scan(frame, net, step=24, scale=1.40, batch=8, cancel=None,
 
 def render_p6(frame, st):
     """Dibuja el estado de la Práctica 6 sobre el frame congelado.
-    gris: ventana ya evaluada | amarillo: en evaluación | naranja: aceptada por la red | verde: resultado."""
+
+    gris: ventana ya evaluada | amarillo: en evaluación | naranja: aceptada por la red | verde: resultado.
+
+    Args:
+        frame (np.ndarray): Frame BGR congelado (el que se analizó).
+        st (dict): Estado actual devuelto por ``p6_scan``.
+
+    Returns:
+        np.ndarray: Frame anotado con el estado del escaneo.
+    """
     out = (frame * 0.55).astype(np.uint8)
     H, W = out.shape[:2]
     ORANGE, YELLOW = (0, 140, 255), (0, 255, 255)
@@ -369,7 +667,24 @@ def render_p6(frame, st):
 
 # ---------------------------------------------------------------- clasificador
 def find_threshold(model_path):
-    """Busca el umbral recomendado en el JSON de métricas del modelo (ignora corridas quick_test)."""
+    """Busca el umbral de clasificación recomendado en el JSON de métricas del modelo.
+
+    Por qué se ignoran las corridas quick_test
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Los JSON generados con ``QUICK_TEST = True`` (solo 2 épocas) producen un modelo
+    sin convergencia real: su umbral no es representativo del rendimiento final.
+    Se ignoran para evitar que la app use un umbral calculado sobre un modelo
+    entrenado parcialmente.  Solo se usa el umbral del último JSON de entrenamiento
+    real (``quick_test: false``), ordenado por fecha de modificación (más reciente primero).
+
+    Args:
+        model_path (str): Ruta al archivo .keras del modelo.
+
+    Returns:
+        tuple[float, str | None]:
+            - umbral_recomendado: Valor en [0, 1] leído del JSON, o 0.5 por defecto.
+            - nombre_archivo: Nombre del JSON usado, o None si no se encontró.
+    """
     folder = os.path.dirname(os.path.abspath(model_path))
     base = os.path.basename(model_path)
     patterns = []
@@ -377,7 +692,7 @@ def find_threshold(model_path):
     if m:
         patterns.append(f"{m.group(1)}_metrics*.json")
     patterns.append(os.path.splitext(base)[0] + "*metrics*.json")
-    
+
     search_folders = [folder]
     for extra in ("models", "modelo", "."):
         abs_extra = os.path.abspath(extra)
@@ -390,6 +705,7 @@ def find_threshold(model_path):
             for f in files:
                 try:
                     data = json.load(open(f, encoding="utf-8"))
+                    # Ignorar corridas rápidas: umbral calculado con solo 2 épocas no es fiable
                     if data.get("quick_test"):
                         continue
                     return float(data["umbral_recomendado"]), os.path.basename(f)
@@ -399,32 +715,77 @@ def find_threshold(model_path):
 
 
 class SmileClassifier:
+    """Clasificador de sonrisa basado en un modelo Keras (.keras).
+
+    Envuelve el modelo con un grafo compilado (tf.function) para acelerar la
+    inferencia, carga el umbral desde el JSON de métricas asociado, y es
+    seguro para uso en hilos (threading.Lock interno).
+    """
+
     def __init__(self, path):
-        import tensorflow as tf                # import tardío: la interfaz abre rápido
+        """Carga el modelo, compila el grafo de inferencia y busca el umbral.
+
+        Optimizaciones en ``__init__``
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        1. ``tf.function`` con firma fija: compila el grafo UNA sola vez con un
+           batch de tamaño dinámico (``[None, 64, 64, 1]``).  El resultado es
+           ~6x más rápido que ejecutar capa por capa en modo eager, con salidas
+           idénticas.  El batch dinámico (None) permite procesar 1, 2 o 5 caras
+           en el mismo grafo sin recompilar.
+        2. Calentamiento: se realiza una predicción con ceros antes de que llegue
+           el primer frame real, para que el primer predict real no sea lento.
+        3. Umbral: se lee de ``find_threshold(path)`` que busca en el JSON de
+           métricas el mejor umbral calculado sobre validación por F1.
+
+        Args:
+            path (str): Ruta al archivo .keras del modelo.
+        """
+        import tensorflow as tf                # import tardío: la interfaz abre rápido sin TF
         from tensorflow import keras
         self.name = os.path.basename(path)
         self.model = keras.models.load_model(path)
         self.lock = threading.Lock()
 
-        # Compilar el grafo una vez (tf.function) en lugar de ejecutar capa por capa en modo
-        # "eager": ~6x más rápido con salidas idénticas. El batch queda dinámico (None), así que
-        # sirve igual para 1, 2 o 5 caras sin volver a compilar.
+        # Compilar el grafo de inferencia una sola vez con tf.function.
+        # La firma [None, IMG_SIZE, IMG_SIZE, 1] acepta cualquier tamaño de batch.
         @tf.function(input_signature=[tf.TensorSpec([None, IMG_SIZE, IMG_SIZE, 1], tf.float32)])
         def _fast(x):
             return self.model(x, training=False)
 
         self._fast, self._tf = _fast, tf
-        self.predict(np.zeros((1, IMG_SIZE, IMG_SIZE, 1), np.float32))     # calentamiento
+        # Calentamiento: primera llamada compila el grafo XLA; después es rápida
+        self.predict(np.zeros((1, IMG_SIZE, IMG_SIZE, 1), np.float32))
+        # Umbral recomendado leído del JSON de métricas (ignora quick_test)
         self.threshold, self.metrics_file = find_threshold(path)
 
     def predict(self, batch):
+        """Clasifica un lote de caras y devuelve las probabilidades de sonrisa.
+
+        Thread-safe gracias al lock interno.
+
+        Args:
+            batch (np.ndarray): Array de forma (N, 64, 64, 1), float32, valores 0–255.
+
+        Returns:
+            np.ndarray: Array 1D de N probabilidades en [0, 1] (1 = sonrisa).
+        """
         with self.lock:
             return self._fast(self._tf.constant(batch)).numpy().ravel()
 
 
 # ---------------------------------------------------------- recorte y preprocesado
 def crop_face(frame, box, margin):
-    """Recorte cuadrado alrededor de la caja, ampliado por `margin` (0.1 = +10 % por lado)."""
+    """Recorte cuadrado alrededor de la caja, ampliado por ``margin`` (0.1 = +10% por lado).
+
+    Args:
+        frame (np.ndarray): Frame BGR de entrada.
+        box (tuple[int, int, int, int]): Caja de la cara (x, y, w, h).
+        margin (float): Fracción del lado a añadir alrededor del recorte.
+            Negativo permite recortar el padding extra que algunos detectores incluyen.
+
+    Returns:
+        np.ndarray | None: Recorte BGR, o None si el recorte resultante es demasiado pequeño.
+    """
     x, y, w, h = box
     cx, cy = x + w / 2, y + h / 2
     side = max(w, h) * (1 + 2 * margin)
@@ -438,6 +799,17 @@ def crop_face(frame, box, margin):
 
 
 def preprocess(crop):
+    """Preprocesa un recorte de cara según el contrato del clasificador.
+
+    Convierte a escala de grises, redimensiona a 64×64, y devuelve float32
+    con valores en [0, 255] y forma (64, 64, 1).
+
+    Args:
+        crop (np.ndarray): Recorte BGR de la cara.
+
+    Returns:
+        np.ndarray: Array (64, 64, 1) float32 con valores 0–255.
+    """
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
     return gray.astype(np.float32)[..., None]
@@ -445,6 +817,15 @@ def preprocess(crop):
 
 # ------------------------------------------------------- seguimiento y suavizado
 def iou(a, b):
+    """Calcula el IoU (Intersection over Union) entre dos cajas (x, y, w, h).
+
+    Args:
+        a (tuple[int, int, int, int]): Primera caja (x, y, w, h).
+        b (tuple[int, int, int, int]): Segunda caja (x, y, w, h).
+
+    Returns:
+        float: IoU en [0, 1].
+    """
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
     ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
@@ -455,32 +836,78 @@ def iou(a, b):
 
 
 class Track:
+    """Representa el seguimiento de una cara individual entre frames.
+
+    Args:
+        tid (int): Identificador único del track.
+        box (tuple): Caja inicial (x, y, w, h).
+        n (int): Número de frames para promediar la probabilidad de sonrisa.
+    """
     def __init__(self, tid, box, n):
+        """Inicializa un objeto Track.
+
+        Args:
+            tid (int): Identificador numérico del track.
+            box (tuple[int, int, int, int]): Coordenadas de la caja (x, y, w, h).
+            n (int): Longitud del búfer circular para el promedio móvil de probabilidades.
+        """
         self.id, self.box, self.missed = tid, box, 0
-        self.probs = deque(maxlen=n)
+        self.probs = deque(maxlen=n)   # historial de probabilidades (ventana deslizante)
 
     @property
     def smooth(self):
+        """Probabilidad promedio suavizada, o None si no hay historial.
+
+        Returns:
+            float | None: Media de las últimas ``n`` probabilidades.
+        """
         return float(np.mean(self.probs)) if self.probs else None
 
 
 class Tracker:
-    """Asocia las caras entre frames (IoU) para suavizar la probabilidad por persona."""
+    """Asocia las caras entre frames (IoU) para suavizar la probabilidad por persona.
+
+    Implementa un tracker simple basado en IoU: en cada frame empareja las nuevas
+    cajas con las del frame anterior por máximo IoU, crea nuevos tracks para las
+    cajas sin pareja, y elimina los tracks que llevan más de ``max_missed`` frames
+    sin ser vistos.
+    """
 
     def __init__(self, smooth_n=5, max_missed=10, min_iou=0.25):
+        """Inicializa el tracker.
+
+        Args:
+            smooth_n (int): Número de frames para promediar la probabilidad.
+            max_missed (int): Frames sin detección antes de eliminar un track.
+            min_iou (float): IoU mínimo para asociar una caja a un track existente.
+        """
         self.tracks, self.next_id = {}, 0
         self.smooth_n, self.max_missed, self.min_iou = smooth_n, max_missed, min_iou
 
     def set_smooth(self, n):
+        """Ajusta la ventana de suavizado en vivo sin perder el historial.
+
+        Args:
+            n (int): Nuevo número de frames para promediar.
+        """
         self.smooth_n = n
         for t in list(self.tracks.values()):
             t.probs = deque(t.probs, maxlen=n)
 
     def clear_probs(self):
+        """Borra el historial de probabilidades de todos los tracks (al cambiar de modelo)."""
         for t in list(self.tracks.values()):
             t.probs.clear()
 
     def update(self, boxes):
+        """Asocia nuevas cajas con tracks existentes y devuelve los tracks activos.
+
+        Args:
+            boxes (list[tuple]): Cajas detectadas en el frame actual (x, y, w, h).
+
+        Returns:
+            list[Track]: Tracks asociados a cada caja de entrada (mismo orden).
+        """
         for t in self.tracks.values():
             t.missed += 1
         pairs = sorted(((iou(t.box, b), tid, i)
@@ -507,9 +934,17 @@ class Tracker:
 
 # ------------------------------------------------------------------- pipeline
 class Face:
+    """Representa una cara detectada con su probabilidad de sonrisa y su ID de track."""
     __slots__ = ("box", "prob", "tid")
 
     def __init__(self, box, prob, tid):
+        """Inicializa una cara.
+
+        Args:
+            box (tuple[int, int, int, int]): Caja (x, y, w, h).
+            prob (float | None): Probabilidad de sonrisa, o None si no hay clasificador.
+            tid (int): ID del track (-1 si sin seguimiento).
+        """
         self.box, self.prob, self.tid = box, prob, tid
 
 
@@ -517,6 +952,7 @@ class Pipeline:
     """Un frame -> caras con probabilidad de sonrisa. Los parámetros se pueden cambiar en vivo."""
 
     def __init__(self):
+        """Inicializa el pipeline con valores por defecto (sin detector ni clasificador)."""
         self.detector = None
         self.classifier = None
         self.det_name = "yunet"
@@ -528,17 +964,44 @@ class Pipeline:
 
     @property
     def margin(self):
+        """Margen de recorte del detector activo.
+
+        Returns:
+            float: Margen en fracción del lado de la caja.
+        """
         return self.margins.get(self.det_name, 0.1)
 
     @property
-    def det_score(self):                       # cada detector recuerda su propia confianza mínima
+    def det_score(self):
+        """Confianza mínima del detector activo (cada detector recuerda la suya).
+
+        Returns:
+            float: Confianza mínima.
+        """
         return self.scores.get(self.det_name, 0.7)
 
     @det_score.setter
     def det_score(self, v):
+        """Asigna la confianza mínima para el detector activo.
+
+        Args:
+            v (float): Nuevo umbral de confianza.
+        """
         self.scores[self.det_name] = v
 
     def process(self, frame):
+        """Ejecuta el pipeline completo sobre un frame: detectar + seguir + clasificar.
+
+        Args:
+            frame (np.ndarray): Frame BGR de entrada.
+
+        Returns:
+            tuple[list[Face], list[np.ndarray], float, float]:
+                - faces: Lista de objetos Face con caja, probabilidad e ID.
+                - crops: Lista de recortes preprocesados (64, 64, 1) float32.
+                - t_det_ms: Tiempo de detección en milisegundos.
+                - t_cls_ms: Tiempo de clasificación en milisegundos.
+        """
         t0 = time.perf_counter()
         det = self.detector
         boxes = det.detect(frame, self.det_score) if det is not None else []
@@ -560,7 +1023,15 @@ class Pipeline:
         return faces, crops, (t1 - t0) * 1000, (t2 - t1) * 1000
 
     def classify_boxes(self, frame, boxes):
-        """Clasifica cajas sueltas (sin seguimiento), p. ej. las de la Práctica 6."""
+        """Clasifica cajas sueltas (sin seguimiento), p.ej. las de la Práctica 6.
+
+        Args:
+            frame (np.ndarray): Frame BGR de donde se recortarán las caras.
+            boxes (list[tuple]): Cajas (x, y, w, h) a clasificar.
+
+        Returns:
+            list[Face]: Faces con probabilidad (o None si no hay clasificador).
+        """
         clf = self.classifier
         faces = [Face(b, None, -1) for b in boxes]
         if clf is None or not boxes:
@@ -579,6 +1050,16 @@ class Pipeline:
 
 # --------------------------------------------------------------------- dibujo
 def draw_faces(frame, faces, threshold):
+    """Dibuja las anotaciones de sonrisa sobre el frame (in-place).
+
+    Args:
+        frame (np.ndarray): Frame BGR a anotar (se modifica in-place).
+        faces (list[Face]): Caras a dibujar.
+        threshold (float): Umbral de probabilidad para decidir si sonríe.
+
+    Returns:
+        np.ndarray: El mismo frame modificado.
+    """
     for f in faces:
         x, y, w, h = f.box
         if f.prob is None:
@@ -596,7 +1077,15 @@ def draw_faces(frame, faces, threshold):
 
 
 def draw_banner(frame, lines):
-    """Franja inferior con texto (para mostrar resultados de la Práctica 6)."""
+    """Dibuja una franja oscura inferior con texto (para mostrar resultados de la Práctica 6).
+
+    Args:
+        frame (np.ndarray): Frame BGR a anotar (se modifica in-place).
+        lines (list[str]): Líneas de texto a mostrar en la franja.
+
+    Returns:
+        np.ndarray: El mismo frame modificado.
+    """
     h, w = frame.shape[:2]
     bh = 12 + 24 * len(lines)
     cv2.rectangle(frame, (0, h - bh), (w, h), (30, 30, 30), -1)

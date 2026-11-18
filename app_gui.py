@@ -1,14 +1,51 @@
 """
 Interfaz gráfica del detector de sonrisas · Versión 2.
-Mejoras sobre v1: tema claro/oscuro/sistema, diseño moderno (CustomTkinter),
-etiquetas PIL sobre el video, animaciones baratas y sparklines de rendimiento.
+=======================================================
 
-Arquitectura de hilos (igual que v1):
-  - Un hilo de trabajo hace captura + detección + clasificación.
-  - La ventana SOLO muestra el último frame procesado.
-  - Nunca se llama a Tk desde el hilo de trabajo: se usa self.post().
+Propósito del módulo
+--------------------
+Aplicación de escritorio (CustomTkinter) que muestra video en tiempo real con
+detección de rostros y clasificación de sonrisas.  Permite cambiar detectores
+(YuNet, SSD, Haar, Práctica 6), modelos CNN (.keras), umbral, margen y otros
+parámetros en vivo sin cortar la captura.
 
-Atajos: q/Esc salir | s captura | r grabar | d recortes | F11 pantalla completa | H panel
+Arquitectura de hilos
+---------------------
+  - **Hilo de trabajo** (``_worker``): captura frames, ejecuta detección +
+    clasificación y deposita el frame anotado en ``self.latest``.
+  - **Hilo principal Tk** (``_refresh``): lee ``self.latest`` cada 15 ms y lo
+    muestra.  NUNCA se llama a Tk desde el hilo de trabajo; toda comunicación
+    pasa por ``self.post()`` (cola ``ui_q``).
+
+Cómo ejecutarlo
+---------------
+    python app_gui.py                        # cámara 0, modelo por defecto
+    python app_gui.py --source video.mp4
+    python app_gui.py --model mi_modelo.keras --theme light
+
+    Si no hay modelos .keras disponibles, la app arranca en modo solo-detección
+    (encuadra rostros en blanco).  Para obtener los modelos, ejecuta el
+    notebook 01_modelo_A_cnn_desde_cero.ipynb en Kaggle o localmente.
+
+Dependencias
+------------
+    opencv-python>=4.9,<5  numpy  pillow  tensorflow>=2.16  customtkinter>=5.2
+    (tkinter viene con Python en Windows/macOS; en Linux: sudo apt install python3-tk)
+
+Archivos que necesita
+---------------------
+    smile_core.py                          núcleo de detección y clasificación
+    practica_6_deteccion_rostros.py        algoritmo Práctica 6 (opcional)
+    models/face_detection_yunet_2023mar.onnx   detector YuNet (se descarga solo)
+    models/deploy.prototxt                 arquitectura SSD (se descarga solo)
+    models/res10_300x300_ssd_iter_140000.caffemodel  pesos SSD (se descarga solo)
+    models/model_A_cnn.keras              clasificador de sonrisas (opcional)
+    models/A_metrics.json                  umbral recomendado del modelo A (opcional)
+
+Atajos de teclado
+-----------------
+    q / Esc   salir          s   captura         r   grabar
+    d         ver recortes   F11 pantalla completa  H   panel lateral
 """
 
 import argparse
@@ -223,6 +260,7 @@ class SuavizadorCajas:
     """Suaviza el movimiento de las cajas con un promedio exponencial por persona."""
 
     def __init__(self):
+        """Inicializa el suavizador de cajas."""
         self._cajas = {}   # tid -> (x, y, w, h) suavizado como floats
 
     def actualizar(self, faces, anim_on):
@@ -249,6 +287,7 @@ class SuavizadorCajas:
         return resultado
 
     def limpiar(self):
+        """Borra el historial de cajas suavizadas."""
         self._cajas.clear()
 
 
@@ -260,6 +299,7 @@ class SuavizadorProb:
     """Interpola suavemente la probabilidad visible hacia el valor real."""
 
     def __init__(self):
+        """Inicializa el suavizador de probabilidades."""
         self._vals = {}    # tid -> float suavizado
 
     def actualizar(self, faces, anim_on):
@@ -277,6 +317,7 @@ class SuavizadorProb:
         return nuevo
 
     def limpiar(self):
+        """Borra el historial de probabilidades suavizadas."""
         self._vals.clear()
 
 
@@ -290,6 +331,7 @@ class DetectorPulso:
     DURACION = 0.30   # segundos que dura el pulso
 
     def __init__(self):
+        """Inicializa el detector de pulso."""
         self._estados = {}   # tid -> bool (última decisión)
         self._pulsos  = {}   # tid -> float (tiempo de inicio del pulso)
 
@@ -310,6 +352,7 @@ class DetectorPulso:
         return t is not None and (time.time() - t) < self.DURACION
 
     def limpiar(self):
+        """Borra el historial de pulsos y estados."""
         self._estados.clear()
         self._pulsos.clear()
 
@@ -451,15 +494,28 @@ class Sparkline:
     """Dibuja un mini-gráfico de línea en un tk.Canvas."""
 
     def __init__(self, canvas, color, maximo=None):
+        """Inicializa un gráfico sparkline.
+
+        Args:
+            canvas (tk.Canvas): Lienzo donde dibujar la gráfica.
+            color (str): Color de la línea (hex o nombre).
+            maximo (float | None): Valor máximo de escala; si None, escala auto.
+        """
         self.canvas = canvas
         self.color  = color
         self.maximo = maximo   # si None, se escala automáticamente
         self.datos  = deque(maxlen=SPARK_LEN)
 
     def agregar(self, valor):
+        """Agrega una nueva muestra al historial del sparkline.
+
+        Args:
+            valor (float): Nuevo valor a registrar.
+        """
         self.datos.append(valor)
 
     def redibujar(self):
+        """Redibuja la curva en el canvas según los datos acumulados."""
         c = self.canvas
         c.delete("all")
         if len(self.datos) < 2:
@@ -490,7 +546,19 @@ class Sparkline:
 # ---------------------------------------------------------------------------
 
 class App:
+    """Aplicación principal de detección de sonrisas con interfaz CustomTkinter.
+
+    Maneja la arquitectura desacoplada de hilos: captura y procesamiento
+    en segundo plano (``_worker``), e interfaz visual en el hilo de Tkinter.
+    """
+
     def __init__(self, root, args):
+        """Inicializa la aplicación y construye la interfaz.
+
+        Args:
+            root (ctk.CTk): Ventana principal de CustomTkinter.
+            args (argparse.Namespace): Argumentos de línea de comandos parseados.
+        """
         self.root = root
         self.args = args
 
@@ -1141,7 +1209,18 @@ class App:
         return next(iter(self.model_files.values()), None)
 
     def _load_model(self, path):
-        """Carga el modelo en un hilo secundario."""
+        """Carga el modelo clasificador en un hilo secundario.
+
+        Modo solo-detección sin modelo
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Si ``path`` es None o vacío (el usuario seleccionó "(sin clasificador)"),
+        se pone ``self.pipe.classifier = None`` y la app sigue funcionando en modo
+        solo-detección: los rostros se encuadran en blanco sin etiqueta de sonrisa.
+        Así la app arranca y funciona correctamente aunque no haya ningún .keras.
+
+        Args:
+            path (str | None): Ruta al archivo .keras, o None para modo solo-detección.
+        """
         if not path:
             self.pipe.classifier = None
             self.model_var.set(NO_MODEL)
@@ -1151,6 +1230,7 @@ class App:
             self._gradcam_var.set(False)
             self._gradcam_chk.configure(state="disabled")
             self._gradcam_status.configure(text="Carga un modelo para activarlo")
+            self.status.set("Modo solo-detección (sin modelo .keras). Para obtener los modelos, ejecute el notebook 01_modelo_A_cnn_desde_cero.ipynb.")
             return
         self.say(f"Cargando modelo {os.path.basename(path)}...")
 
@@ -1195,12 +1275,14 @@ class App:
     # -----------------------------------------------------------------------
 
     def _use_camera(self):
+        """Conecta a la cámara según el índice indicado en el selector."""
         try:
             self.open_source(int(self.cam_var.get()))
         except ValueError:
             self.status.set("Índice de cámara no válido")
 
     def _open_video(self):
+        """Abre un diálogo de archivo para seleccionar y reproducir un video."""
         path = filedialog.askopenfilename(
             title="Elegir video",
             filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"), ("Todos", "*.*")]
@@ -1689,6 +1771,12 @@ class App:
             self.post(lambda: self._p6_failed(msg))
 
     def _p6_done(self, img, summary):
+        """Muestra el resultado final del análisis de la Práctica 6 en pantalla.
+
+        Args:
+            img (np.ndarray): Imagen congelada con las detecciones finales dibujadas.
+            summary (str): Texto resumen para la barra de estado.
+        """
         self.freeze_img   = img
         self.freeze_dirty = True
         self.p6_busy      = False
@@ -1696,6 +1784,7 @@ class App:
         self.status.set(summary)
 
     def _p6_cancelled(self):
+        """Restaura el video en vivo tras cancelar el análisis de la Práctica 6."""
         self.freeze_img  = None
         self.p6_busy     = False
         self.shown_id    = -1
@@ -1703,6 +1792,11 @@ class App:
         self.status.set("Análisis de la Práctica 6 cancelado")
 
     def _p6_failed(self, msg):
+        """Maneja errores ocurridos durante el análisis de la Práctica 6.
+
+        Args:
+            msg (str): Mensaje de error capturado.
+        """
         self.freeze_img  = None
         self.p6_busy     = False
         self.shown_id    = -1
@@ -1767,6 +1861,14 @@ class App:
 # ---------------------------------------------------------------------------
 
 def parse_args(argv=None):
+    """Parsea los argumentos de línea de comandos para la GUI.
+
+    Args:
+        argv (list[str] | None): Lista de argumentos opcionales.
+
+    Returns:
+        argparse.Namespace: Objeto con los parámetros parseados.
+    """
     ap = argparse.ArgumentParser(description="Detector de Sonrisas v2")
     ap.add_argument("--source", default="0",
                     help="índice de cámara o ruta de un video")
@@ -1787,6 +1889,7 @@ def parse_args(argv=None):
 # ---------------------------------------------------------------------------
 
 def main():
+    """Punto de entrada principal para la aplicación gráfica."""
     args = parse_args()
     # CustomTkinter usa su propia ventana raíz
     root = ctk.CTk()

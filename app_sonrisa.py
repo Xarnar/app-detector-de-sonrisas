@@ -1,9 +1,41 @@
 """
-Detector de sonrisas en tiempo real.
-Pipeline: cámara -> YuNet (rostros) -> recorte + preprocesado -> CNN (sonrie / no sonrie) -> overlay
+Detector de sonrisas en tiempo real (interfaz de consola).
+===========================================================
 
-Teclas:  q salir | + / - margen del recorte | [ / ] umbral | d ver recortes (debug)
-         r grabar video de respaldo | s captura de pantalla
+Propósito del módulo
+--------------------
+Versión ligera sin GUI del detector de sonrisas.  Lee frames de una cámara o
+video, detecta rostros con YuNet, los clasifica con un modelo CNN (.keras) y
+muestra el resultado en una ventana OpenCV.
+
+Pipeline
+--------
+    cámara/video -> YuNet (rostros) -> recorte + preprocesado -> CNN (sonríe/no) -> overlay
+
+Cómo ejecutarlo
+---------------
+    python app_sonrisa.py                             # cámara 0, modelo por defecto
+    python app_sonrisa.py --source 1 --model mi_modelo.keras
+    python app_sonrisa.py --source video.mp4 --threshold 0.4
+
+Teclas durante la ejecución
+----------------------------
+    q          Salir
+    + / -      Aumentar/reducir margen del recorte
+    [ / ]      Bajar/subir umbral de sonrisa
+    d          Activar/desactivar vista de recortes (debug)
+    r          Iniciar/detener grabación de video de respaldo
+    s          Captura de pantalla
+
+Dependencias
+------------
+    numpy, opencv-python, tensorflow (opcional; sin él solo se detecta)
+
+Archivos que necesita
+---------------------
+    models/face_detection_yunet_2023mar.onnx  – detector (se descarga si falta)
+    models/model_A_cnn.keras                  – clasificador (opcional)
+    models/A_metrics.json                     – umbral recomendado (opcional)
 """
 import argparse, json, os, time, urllib.request
 from collections import deque
@@ -12,6 +44,15 @@ import cv2
 import numpy as np
 
 def find_file(filename, search_dirs=("models", ".")):
+    """Busca un archivo en las carpetas comunes y devuelve su ruta si existe.
+
+    Args:
+        filename (str): Nombre o ruta del archivo a buscar.
+        search_dirs (tuple[str, ...]): Carpetas donde buscar, en orden.
+
+    Returns:
+        str: Ruta al archivo encontrado, o ruta sugerida dentro de 'models'.
+    """
     if os.path.exists(filename):
         return filename
     for d in search_dirs:
@@ -31,6 +72,18 @@ GREEN, RED, WHITE = (60, 200, 60), (50, 50, 230), (255, 255, 255)
 
 # ----------------------------------------------------------------- detector
 def load_detector(path, score_thr):
+    """Carga el detector YuNet, descargándolo si no existe.
+
+    Args:
+        path (str): Ruta al archivo .onnx de YuNet.
+        score_thr (float): Umbral de confianza mínimo para aceptar detecciones.
+
+    Returns:
+        cv2.FaceDetectorYN: Detector listo para usar.
+
+    Raises:
+        SystemExit: Si no se puede descargar el modelo.
+    """
     path = find_file(path)
     if not os.path.exists(path):
         print(f"Descargando YuNet a {path} ...")
@@ -43,7 +96,15 @@ def load_detector(path, score_thr):
 
 
 def detect_faces(detector, frame):
-    """Devuelve lista de cajas (x, y, w, h) enteras."""
+    """Detecta rostros en el frame con YuNet y devuelve cajas (x, y, w, h) enteras.
+
+    Args:
+        detector (cv2.FaceDetectorYN): Detector YuNet ya cargado.
+        frame (np.ndarray): Frame BGR de entrada.
+
+    Returns:
+        list[tuple[int, int, int, int]]: Lista de cajas (x, y, w, h).
+    """
     h, w = frame.shape[:2]
     detector.setInputSize((w, h))
     _, faces = detector.detect(frame)
@@ -54,10 +115,27 @@ def detect_faces(detector, frame):
 
 # --------------------------------------------------------------- clasificador
 def load_classifier(path):
-    """Devuelve una función batch(N,64,64,1 float32 0-255) -> probabilidades (N,), o None."""
+    """Carga el modelo clasificador de sonrisas, o devuelve None en modo solo-detección.
+
+    Modo solo-detección sin modelo
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Si el archivo .keras no existe (ruta no encontrada), la función imprime un
+    aviso claro y devuelve None.  Esto permite que la app arranque sin el modelo
+    y muestre los rostros detectados con recuadro blanco (sin clasificación).
+    El import de TensorFlow se hace aquí (tardío) para que la app abra rápido
+    incluso si TensorFlow no está instalado.
+
+    Args:
+        path (str): Ruta al archivo .keras del modelo.
+
+    Returns:
+        callable | None: Función ``batch(N,64,64,1 float32 0-255) -> probabilidades (N,)``,
+            o None si el modelo no existe.
+    """
     resolved = find_file(path) if not os.path.exists(path) else path
     if not os.path.exists(resolved):
         print(f"[aviso] No se encontró {path}: modo solo-detección (sin clasificar).")
+        print("        Para obtener los modelos entrenados, ejecute el notebook 01_modelo_A_cnn_desde_cero.ipynb.")
         return None
     from tensorflow import keras           # import tardío: la app arranca rápido sin modelo
     model = keras.models.load_model(resolved)
@@ -66,7 +144,16 @@ def load_classifier(path):
 
 
 def crop_face(frame, box, margin):
-    """Recorte cuadrado alrededor de la caja, ampliado por `margin` (0.1 = +10 % por lado)."""
+    """Recorte cuadrado alrededor de la caja, ampliado por ``margin`` (0.1 = +10% por lado).
+
+    Args:
+        frame (np.ndarray): Frame BGR de entrada.
+        box (tuple[int, int, int, int]): Caja de la cara (x, y, w, h).
+        margin (float): Fracción del lado a añadir alrededor del recorte.
+
+    Returns:
+        np.ndarray | None: Recorte BGR, o None si es demasiado pequeño.
+    """
     x, y, w, h = box
     cx, cy = x + w / 2, y + h / 2
     side = max(w, h) * (1 + 2 * margin)
@@ -80,7 +167,14 @@ def crop_face(frame, box, margin):
 
 
 def preprocess(crop):
-    """Contrato del modelo: gris, 64x64, float32 0-255, forma (64,64,1)."""
+    """Preprocesa un recorte según el contrato del modelo: gris, 64x64, float32 0-255, forma (64,64,1).
+
+    Args:
+        crop (np.ndarray): Recorte BGR de la cara.
+
+    Returns:
+        np.ndarray: Array (64, 64, 1) float32, valores 0–255.
+    """
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
     return gray.astype(np.float32)[..., None]
@@ -88,6 +182,15 @@ def preprocess(crop):
 
 # ------------------------------------------------------- seguimiento + suavizado
 def iou(a, b):
+    """Calcula el IoU entre dos cajas (x, y, w, h).
+
+    Args:
+        a (tuple): Primera caja (x, y, w, h).
+        b (tuple): Segunda caja (x, y, w, h).
+
+    Returns:
+        float: IoU en [0, 1].
+    """
     ax, ay, aw, ah = a; bx, by, bw, bh = b
     ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
     iy = max(0, min(ay + ah, by + bh) - max(ay, by))
@@ -97,22 +200,56 @@ def iou(a, b):
 
 
 class Track:
+    """Representa el seguimiento de una cara individual.
+
+    Args:
+        tid (int): ID único del track.
+        box (tuple): Caja inicial (x, y, w, h).
+        n (int): Tamaño de la ventana de suavizado de probabilidades.
+    """
     def __init__(self, tid, box, n):
+        """Inicializa un track de rostro.
+
+        Args:
+            tid (int): Identificador numérico del track.
+            box (tuple[int, int, int, int]): Coordenadas de la caja (x, y, w, h).
+            n (int): Longitud del búfer circular para el promedio móvil de probabilidades.
+        """
         self.id, self.box, self.missed = tid, box, 0
-        self.probs = deque(maxlen=n)
+        self.probs = deque(maxlen=n)   # historial de probabilidades (ventana deslizante)
 
     @property
     def smooth(self):
+        """Probabilidad promedio suavizada.
+
+        Returns:
+            float: Media de las últimas ``n`` probabilidades (0.0 si no hay historial).
+        """
         return float(np.mean(self.probs)) if self.probs else 0.0
 
 
 class Tracker:
     """Asocia las caras de cada frame con las del anterior (IoU) para suavizar por persona."""
     def __init__(self, smooth_n=5, max_missed=10, min_iou=0.25):
+        """Inicializa el tracker.
+
+        Args:
+            smooth_n (int): Frames para promediar la probabilidad.
+            max_missed (int): Frames sin detección antes de eliminar un track.
+            min_iou (float): IoU mínimo para asociar una caja a un track.
+        """
         self.tracks, self.next_id = {}, 0
         self.smooth_n, self.max_missed, self.min_iou = smooth_n, max_missed, min_iou
 
     def update(self, boxes):
+        """Asocia nuevas cajas con tracks existentes y devuelve los tracks activos.
+
+        Args:
+            boxes (list[tuple]): Cajas detectadas en el frame actual.
+
+        Returns:
+            list[Track]: Tracks asociados a cada caja de entrada (mismo orden).
+        """
         for t in self.tracks.values():
             t.missed += 1
         pairs = sorted(((iou(t.box, b), tid, i)
@@ -137,6 +274,16 @@ class Tracker:
 
 # ------------------------------------------------------------------- dibujo
 def draw_face(frame, track, thr, has_model):
+    """Dibuja el recuadro y la etiqueta de sonrisa sobre el frame.
+
+    Si no hay modelo cargado, dibuja recuadro blanco sin etiqueta.
+
+    Args:
+        frame (np.ndarray): Frame BGR a anotar (in-place).
+        track (Track): Track de la cara a dibujar.
+        thr (float): Umbral de probabilidad para decidir si sonríe.
+        has_model (bool): True si hay clasificador activo.
+    """
     x, y, w, h = track.box
     if not has_model:
         cv2.rectangle(frame, (x, y), (x + w, y + h), WHITE, 2)
@@ -152,7 +299,14 @@ def draw_face(frame, track, thr, has_model):
 
 
 def debug_strip(crops):
-    """Muestra los recortes tal como los ve el modelo (para calibrar el margen)."""
+    """Muestra los recortes tal como los ve el modelo (para calibrar el margen).
+
+    Args:
+        crops (list[np.ndarray]): Lista de recortes preprocesados (64, 64, 1) float32.
+
+    Returns:
+        np.ndarray: Tira horizontal de hasta 6 recortes ampliados a 128×128 px.
+    """
     tiles = [cv2.resize(c[..., 0].astype(np.uint8), (128, 128), interpolation=cv2.INTER_NEAREST)
              for c in crops[:6]]
     return np.hstack(tiles) if tiles else np.zeros((128, 128), np.uint8)
@@ -160,6 +314,15 @@ def debug_strip(crops):
 
 # --------------------------------------------------------------------- main
 def main():
+    """Punto de entrada del detector de sonrisas en consola.
+
+    Pipeline detect+classify en hilo principal (bucle de captura)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    El procesamiento es síncrono: en cada iteración del while se captura un
+    frame, se ejecuta YuNet (detección), se recortan y preprocesan las caras
+    y se hace un único ``model(batch)`` por frame.  No usa hilos separados
+    (a diferencia de app_gui.py) para mantener el código simple.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="0", help="índice de cámara (0,1..) o ruta de un video")
     ap.add_argument("--model", default=find_file("model_A_cnn.keras"))
@@ -186,6 +349,7 @@ def main():
     margin = args.margin
 
     detector = load_detector(YUNET_FILE, args.det_score)
+    # load_classifier devuelve None si el modelo no existe: modo solo-detección
     classify = load_classifier(args.model)
     tracker = Tracker(args.smooth)
 
