@@ -11,15 +11,14 @@ mis_fotos/
 salidas/
 config.json
 
-# Capturas y respaldos en la raíz (compatibilidad con v1)
+# Capturas y videos de prueba
 captura_*.png
 respaldo_*.mp4
-video.mp4
+*.mp4
 
 # Archivos y carpetas de desarrollo local excluidos
 trabajo_daniel/
 app_gui_v1.py
-LEEME_GUI.md
 
 # Archivos comprimidos redundantes
 results.zip
